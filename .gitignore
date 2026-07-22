@@ -1,0 +1,19 @@
+.DS_Store
+.venv/
+__pycache__/
+*.py[cod]
+
+# Arquivos gerados pelo aplicativo
+pedidos/
+outputs/
+dist/
+build/
+*.spec
+
+# Imagens usadas apenas em testes locais
+estampas/
+
+# Arquivos antigos e temporários
+planilha_modelo_old.xlsx
+*.inspect.ndjson
+

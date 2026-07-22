@@ -55,6 +55,11 @@ maiúsculas. As pastas e os nomes dos arquivos copiados também saem em maiúscu
 
 ## Colunas da planilha
 
+Planilha para preencher os pedidos:
+
+- [Abrir planilha modelo no Google Sheets](https://docs.google.com/spreadsheets/d/1qx2X7ndQ31F-HuCkwdf1XcYb1RxI__BqnTZDrkDIhWU/edit?usp=sharing)
+- [Baixar planilha modelo em Excel](./planilha_modelo.xlsx)
+
 Obrigatórias:
 
 - `ID do Pedido`
@@ -78,7 +83,7 @@ em nomes de pastas.
 
 ### Windows
 
-1. Instale o Python 3.12 ou superior.
+1. [Baixe e instale o Python 3.12 ou superior](https://www.python.org/downloads/windows/).
 2. Marque `Add Python to PATH` durante a instalação.
 3. Abra a pasta do projeto no Explorador.
 4. Clique na barra de endereço, digite `cmd` e pressione Enter.
@@ -93,7 +98,7 @@ python app.py
 
 ### macOS
 
-1. Instale o Python 3.12 ou superior.
+1. [Baixe e instale o Python 3.12 ou superior](https://www.python.org/downloads/macos/).
 2. Abra o Terminal dentro da pasta do projeto.
 3. Execute:
 
@@ -105,6 +110,11 @@ python3 app.py
 ```
 
 ## Gerar aplicativo para Windows
+
+Também é possível gerar e baixar o aplicativo automaticamente pela página
+[GitHub Actions — Gerar aplicativo Windows](https://github.com/marildamarketplace-maker/OrganizadorEstampas/actions/workflows/build-windows.yml).
+
+Abra a execução mais recente e baixe o artefato `OrganizadorEstampas-Windows`.
 
 A geração do `.exe` deve ser feita em um computador Windows.
 

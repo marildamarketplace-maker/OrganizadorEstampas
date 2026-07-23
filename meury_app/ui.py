@@ -10,20 +10,23 @@ from tkinter import filedialog, messagebox, ttk
 
 from .config import APP_NAME, load_config, save_config
 from .indexer import build_index, load_index
-from .processor import process_excel
+from .processor import process_csv_text, process_excel
 
 
 class App:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title(APP_NAME)
-        self.root.geometry("900x720")
-        self.root.minsize(800, 650)
+        self.root.geometry("960x840")
+        self.root.minsize(840, 720)
 
         self.config = load_config()
         self.index = {}
 
         self.excel_var = tk.StringVar(value=self.config.get("excel_path", ""))
+        self.input_mode_var = tk.StringVar(
+            value=self.config.get("input_mode", "excel")
+        )
         self.source_dirs = list(self.config.get("source_dirs", []))
         self.output_var = tk.StringVar(value=self.config.get("output_dir", ""))
         self.status_var = tk.StringVar(value="Selecione a planilha e as pastas.")
@@ -59,13 +62,32 @@ class App:
         form = ttk.LabelFrame(main, text="1. Selecione os arquivos e pastas", padding=16)
         form.pack(fill="x")
 
+        mode_frame = ttk.Frame(form)
+        mode_frame.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 6))
+        ttk.Label(mode_frame, text="Entrada dos pedidos:").pack(side="left")
+        self.excel_mode_button = ttk.Radiobutton(
+            mode_frame,
+            text="Planilha Excel",
+            variable=self.input_mode_var,
+            value="excel",
+        )
+        self.excel_mode_button.pack(side="left", padx=(10, 4))
+        self.csv_mode_button = ttk.Radiobutton(
+            mode_frame,
+            text="Texto CSV",
+            variable=self.input_mode_var,
+            value="csv",
+        )
+        self.csv_mode_button.pack(side="left", padx=4)
+
         self._path_row(
-            form, 0, "Planilha Excel", self.excel_var,
+            form, 1, "Planilha Excel", self.excel_var,
             "Selecionar Excel", self.select_excel
         )
-        self._source_paths_row(form, 1)
+        self._csv_text_row(form, 2)
+        self._source_paths_row(form, 3)
         self._path_row(
-            form, 2, "Pasta de saída dos pedidos", self.output_var,
+            form, 4, "Pasta de saída dos pedidos", self.output_var,
             "Selecionar saída", self.select_output
         )
 
@@ -152,6 +174,29 @@ class App:
         )
         self.remove_source_button.pack(fill="x", pady=(6, 0))
 
+    def _csv_text_row(self, parent, row):
+        ttk.Label(parent, text="Texto CSV dos pedidos").grid(
+            row=row, column=0, sticky="nw", pady=7
+        )
+        csv_frame = ttk.Frame(parent)
+        csv_frame.grid(row=row, column=1, columnspan=2, sticky="ew", padx=10, pady=7)
+        csv_frame.columnconfigure(0, weight=1)
+        self.csv_text = tk.Text(csv_frame, height=4, wrap="none")
+        self.csv_text.grid(row=0, column=0, sticky="ew")
+        csv_scrollbar = ttk.Scrollbar(
+            csv_frame, orient="vertical", command=self.csv_text.yview
+        )
+        csv_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.csv_text.configure(yscrollcommand=csv_scrollbar.set)
+        ttk.Label(
+            csv_frame,
+            text=(
+                "Ordem: ID do Pedido; Data do Pedido; ID do Cliente; "
+                "BASE; ID da Estampa; Variante"
+            ),
+            style="Subtitle.TLabel",
+        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
+
     def _refresh_source_list(self):
         if not hasattr(self, "source_list"):
             return
@@ -166,6 +211,7 @@ class App:
         )
         if path:
             self.excel_var.set(path)
+            self.input_mode_var.set("excel")
             self._save_paths()
 
     def select_source(self):
@@ -201,6 +247,7 @@ class App:
     def _save_paths(self):
         save_config({
             "excel_path": self.excel_var.get(),
+            "input_mode": self.input_mode_var.get(),
             "source_dirs": self.source_dirs,
             "output_dir": self.output_var.get(),
         })
@@ -273,13 +320,17 @@ class App:
 
     def start_processing(self):
         excel = self.excel_var.get().strip()
+        input_mode = self.input_mode_var.get()
+        csv_text = self.csv_text.get("1.0", "end").strip()
         sources = [Path(source) for source in self.source_dirs]
         output = self.output_var.get().strip()
 
-        if not excel or not sources or not output:
+        has_orders = excel if input_mode == "excel" else csv_text
+        if not has_orders or not sources or not output:
             messagebox.showwarning(
                 "Atenção",
-                "Selecione o Excel, a pasta de entrada e a pasta de saída."
+                "Informe os pedidos, adicione uma pasta de entrada e "
+                "selecione a pasta de saída."
             )
             return
 
@@ -295,26 +346,35 @@ class App:
         self._save_paths()
         self._set_busy(True)
         self.progress.configure(mode="determinate", value=0)
-        self.status_var.set("Processando a planilha...")
+        self.status_var.set("Processando os pedidos...")
         self._log("Iniciando processamento dos pedidos.")
 
         thread = threading.Thread(
             target=self._process_worker,
-            args=(Path(excel), Path(output)),
+            args=(input_mode, excel, csv_text, Path(output)),
             daemon=True
         )
         thread.start()
 
-    def _process_worker(self, excel, output):
+    def _process_worker(self, input_mode, excel, csv_text, output):
         try:
-            results, summary = process_excel(
-                excel,
-                output,
-                self.index,
-                progress_callback=lambda current, total, msg: self.root.after(
-                    0, self._processing_progress, current, total, msg
-                )
+            progress_callback = lambda current, total, msg: self.root.after(
+                0, self._processing_progress, current, total, msg
             )
+            if input_mode == "csv":
+                results, summary = process_csv_text(
+                    csv_text,
+                    output,
+                    self.index,
+                    progress_callback=progress_callback,
+                )
+            else:
+                results, summary = process_excel(
+                    Path(excel),
+                    output,
+                    self.index,
+                    progress_callback=progress_callback,
+                )
             self.root.after(0, self._processing_complete, results, summary)
         except Exception as exc:
             self.root.after(0, self._show_error, str(exc))
@@ -361,6 +421,8 @@ class App:
         self.process_button.configure(state=state)
         self.add_source_button.configure(state=state)
         self.remove_source_button.configure(state=state)
+        self.excel_mode_button.configure(state=state)
+        self.csv_mode_button.configure(state=state)
 
     def _log(self, text):
         self.log.configure(state="normal")

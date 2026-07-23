@@ -47,10 +47,11 @@ Exemplos:
 ```text
 6652-A.jpg
 6652-B.png
-MV27164-W.jpeg
+MV27164-W.pdf
 ```
 
 A comparação ignora letras maiúsculas e minúsculas, mas exige o nome completo correto.
+Somente arquivos nos formatos `.JPG`, `.PNG` e `.PDF` são incluídos no índice.
 Os IDs de pedido, cliente, estampa e variante são convertidos automaticamente para
 maiúsculas. As pastas e os nomes dos arquivos copiados também saem em maiúsculas.
 

@@ -17,14 +17,14 @@ class App:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title(APP_NAME)
-        self.root.geometry("860x650")
-        self.root.minsize(760, 580)
+        self.root.geometry("900x720")
+        self.root.minsize(800, 650)
 
         self.config = load_config()
         self.index = {}
 
         self.excel_var = tk.StringVar(value=self.config.get("excel_path", ""))
-        self.source_var = tk.StringVar(value=self.config.get("source_dir", ""))
+        self.source_dirs = list(self.config.get("source_dirs", []))
         self.output_var = tk.StringVar(value=self.config.get("output_dir", ""))
         self.status_var = tk.StringVar(value="Selecione a planilha e as pastas.")
         self.index_status_var = tk.StringVar(value="Índice ainda não carregado.")
@@ -63,10 +63,7 @@ class App:
             form, 0, "Planilha Excel", self.excel_var,
             "Selecionar Excel", self.select_excel
         )
-        self._path_row(
-            form, 1, "Pasta de entrada das estampas", self.source_var,
-            "Selecionar entrada", self.select_source
-        )
+        self._source_paths_row(form, 1)
         self._path_row(
             form, 2, "Pasta de saída dos pedidos", self.output_var,
             "Selecionar saída", self.select_output
@@ -123,6 +120,45 @@ class App:
         )
         parent.columnconfigure(1, weight=1)
 
+    def _source_paths_row(self, parent, row):
+        ttk.Label(parent, text="Pastas de entrada das estampas").grid(
+            row=row, column=0, sticky="nw", pady=7
+        )
+        list_frame = ttk.Frame(parent)
+        list_frame.grid(row=row, column=1, sticky="ew", padx=10, pady=7)
+        list_frame.columnconfigure(0, weight=1)
+
+        self.source_list = tk.Listbox(
+            list_frame, height=3, selectmode="extended", exportselection=False
+        )
+        self.source_list.grid(row=0, column=0, sticky="ew")
+        scrollbar = ttk.Scrollbar(
+            list_frame, orient="vertical", command=self.source_list.yview
+        )
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        self.source_list.configure(yscrollcommand=scrollbar.set)
+        self._refresh_source_list()
+
+        button_frame = ttk.Frame(parent)
+        button_frame.grid(row=row, column=2, sticky="n", pady=7)
+        self.add_source_button = ttk.Button(
+            button_frame, text="Adicionar entrada", command=self.select_source
+        )
+        self.add_source_button.pack(fill="x")
+        self.remove_source_button = ttk.Button(
+            button_frame,
+            text="Remover selecionada",
+            command=self.remove_selected_sources,
+        )
+        self.remove_source_button.pack(fill="x", pady=(6, 0))
+
+    def _refresh_source_list(self):
+        if not hasattr(self, "source_list"):
+            return
+        self.source_list.delete(0, "end")
+        for source in self.source_dirs:
+            self.source_list.insert("end", source)
+
     def select_excel(self):
         path = filedialog.askopenfilename(
             title="Selecione a planilha",
@@ -133,12 +169,28 @@ class App:
             self._save_paths()
 
     def select_source(self):
-        path = filedialog.askdirectory(title="Selecione a pasta das estampas")
-        if path:
-            self.source_var.set(path)
+        path = filedialog.askdirectory(title="Adicione uma pasta de estampas")
+        if path and path not in self.source_dirs:
+            self.source_dirs.append(path)
+            self._refresh_source_list()
             self._save_paths()
             self.index = {}
-            self.index_status_var.set("Pasta alterada. Clique em Atualizar índice.")
+            self.index_status_var.set(
+                "Pastas alteradas. Clique em Atualizar índice."
+            )
+
+    def remove_selected_sources(self):
+        selected = list(self.source_list.curselection())
+        if not selected:
+            return
+        for index in reversed(selected):
+            del self.source_dirs[index]
+        self._refresh_source_list()
+        self._save_paths()
+        self.index = {}
+        self.index_status_var.set(
+            "Pastas alteradas. Clique em Atualizar índice."
+        )
 
     def select_output(self):
         path = filedialog.askdirectory(title="Selecione a pasta de saída")
@@ -149,25 +201,28 @@ class App:
     def _save_paths(self):
         save_config({
             "excel_path": self.excel_var.get(),
-            "source_dir": self.source_var.get(),
+            "source_dirs": self.source_dirs,
             "output_dir": self.output_var.get(),
         })
 
     def _try_load_saved_index(self):
-        source_text = self.source_var.get().strip()
-        if not source_text:
+        sources = [Path(source) for source in self.source_dirs]
+        if not sources:
             return
-        source = Path(source_text)
-        self.index = load_index(source)
+        self.index = load_index(sources)
         if self.index:
             self.index_status_var.set(
-                f"Índice carregado: {len(self.index):,} nomes de imagens."
+                f"Índice carregado de {len(sources)} pasta(s): "
+                f"{len(self.index):,} nomes de imagens."
             )
 
     def start_indexing(self):
-        source_text = self.source_var.get().strip()
-        if not source_text:
-            messagebox.showwarning("Atenção", "Selecione a pasta de entrada das estampas.")
+        sources = [Path(source) for source in self.source_dirs]
+        if not sources:
+            messagebox.showwarning(
+                "Atenção",
+                "Adicione pelo menos uma pasta de entrada das estampas.",
+            )
             return
 
         self._set_busy(True)
@@ -178,15 +233,15 @@ class App:
 
         thread = threading.Thread(
             target=self._index_worker,
-            args=(Path(source_text),),
+            args=(sources,),
             daemon=True
         )
         thread.start()
 
-    def _index_worker(self, source):
+    def _index_worker(self, sources):
         try:
             index, result = build_index(
-                source,
+                sources,
                 progress_callback=lambda count, msg: self.root.after(
                     0, self._index_progress, count, msg
                 )
@@ -204,22 +259,24 @@ class App:
         self.progress.stop()
         self.progress.configure(mode="determinate", value=100)
         self.index_status_var.set(
-            f"Índice pronto: {result.total_files:,} arquivos; "
+            f"Índice pronto em {result.source_dirs} pasta(s): "
+            f"{result.total_files:,} arquivos; "
             f"{result.indexed_names:,} nomes; {result.duplicates:,} duplicados."
         )
         self.status_var.set("Indexação concluída.")
         self._log(
             f"Índice concluído em {result.elapsed_seconds:.1f}s. "
-            f"Arquivos: {result.total_files:,}. Duplicados: {result.duplicates:,}."
+            f"Pastas: {result.source_dirs}. Arquivos: {result.total_files:,}. "
+            f"Duplicados: {result.duplicates:,}."
         )
         self._set_busy(False)
 
     def start_processing(self):
         excel = self.excel_var.get().strip()
-        source = self.source_var.get().strip()
+        sources = [Path(source) for source in self.source_dirs]
         output = self.output_var.get().strip()
 
-        if not excel or not source or not output:
+        if not excel or not sources or not output:
             messagebox.showwarning(
                 "Atenção",
                 "Selecione o Excel, a pasta de entrada e a pasta de saída."
@@ -227,7 +284,7 @@ class App:
             return
 
         if not self.index:
-            self.index = load_index(Path(source))
+            self.index = load_index(sources)
         if not self.index:
             messagebox.showwarning(
                 "Índice necessário",
@@ -302,6 +359,8 @@ class App:
         state = "disabled" if busy else "normal"
         self.index_button.configure(state=state)
         self.process_button.configure(state=state)
+        self.add_source_button.configure(state=state)
+        self.remove_source_button.configure(state=state)
 
     def _log(self, text):
         self.log.configure(state="normal")

@@ -81,6 +81,18 @@ CLIENTE1/19-07-2026/PEDIDO2/BASE1/6652-A.JPG
 A data usa o formato `DD-MM-AAAA` no nome da pasta, pois barras não são permitidas
 em nomes de pastas.
 
+## Entrada por texto CSV
+
+Como alternativa ao Excel, selecione `Texto CSV` no aplicativo e cole os pedidos no
+campo de texto. São aceitos separadores por ponto e vírgula, vírgula ou tabulação.
+O cabeçalho é opcional, mas as colunas devem estar nesta ordem:
+
+```text
+ID do Pedido;Data do Pedido;ID do Cliente;BASE;ID da Estampa;Variante
+PEDIDO1;18/07/2026;CLIENTE1;BASE1;6652;A
+PEDIDO1;18/07/2026;CLIENTE1;BASE1;7001;X
+```
+
 ## Instalação para testar com Python
 
 ### Windows
@@ -156,7 +168,8 @@ Ajustes do Sistema > Privacidade e Segurança > Abrir Mesmo Assim
 
 ## Como usar
 
-1. Clique em `Selecionar Excel`.
+1. Escolha `Planilha Excel` e clique em `Selecionar Excel`, ou escolha `Texto CSV`
+   e cole os pedidos.
 2. Clique em `Adicionar entrada` para cada pasta onde existam estampas.
    Use `Remover selecionada` para retirar uma pasta da lista.
 3. Escolha a pasta de saída.

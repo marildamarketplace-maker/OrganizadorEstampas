@@ -7,10 +7,39 @@ from openpyxl import Workbook
 
 import meury_app.indexer as indexer_module
 from meury_app.indexer import build_index, image_key, load_index
-from meury_app.processor import process_excel
+from meury_app.processor import process_csv_text, process_excel
 
 
 class CustomerOrderStructureTest(unittest.TestCase):
+    def test_processes_csv_text_without_header_in_excel_column_order(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "estampas" / "MV" / "6652" / "6652-A.pdf"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"pdf")
+            output = root / "saida"
+            csv_text = "pedido-csv;23/07/2026;cliente-csv;base-csv;6652;a"
+            index = {
+                image_key("MV", "6652", "6652-A"): [str(source)],
+            }
+
+            results, summary = process_csv_text(csv_text, output, index)
+
+            self.assertEqual(summary.copiados, 1)
+            self.assertEqual(results[0].pedido, "PEDIDO-CSV")
+            self.assertEqual(results[0].cliente, "CLIENTE-CSV")
+            self.assertEqual(results[0].base, "BASE-CSV")
+            self.assertTrue(
+                (
+                    output
+                    / "CLIENTE-CSV"
+                    / "23-07-2026"
+                    / "PEDIDO-CSV"
+                    / "BASE-CSV"
+                    / "6652-A.PDF"
+                ).exists()
+            )
+
     def test_index_scans_multiple_source_folders(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

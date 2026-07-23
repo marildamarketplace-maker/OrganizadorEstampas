@@ -9,7 +9,7 @@ import time
 from .config import INDEX_FILE, SUPPORTED_EXTENSIONS, ensure_app_dir
 
 
-INDEX_VERSION = 3
+INDEX_VERSION = 4
 
 
 @dataclass

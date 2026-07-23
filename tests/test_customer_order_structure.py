@@ -1,14 +1,46 @@
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from openpyxl import Workbook
 
-from meury_app.indexer import image_key
+import meury_app.indexer as indexer_module
+from meury_app.indexer import build_index, image_key, load_index
 from meury_app.processor import process_excel
 
 
 class CustomerOrderStructureTest(unittest.TestCase):
+    def test_index_scans_multiple_source_folders(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source_a = root / "origem-a"
+            source_b = root / "origem-b"
+            image_a = source_a / "MV" / "6652" / "6652-A.jpg"
+            duplicate_a = source_b / "MV" / "6652" / "6652-A.png"
+            image_b = source_b / "MV" / "7001" / "7001-X.jpg"
+            for image in (image_a, duplicate_a, image_b):
+                image.parent.mkdir(parents=True, exist_ok=True)
+                image.write_bytes(b"imagem")
+
+            cache = root / "indice.json"
+            with (
+                patch.object(indexer_module, "INDEX_FILE", cache),
+                patch.object(indexer_module, "ensure_app_dir"),
+            ):
+                index, result = build_index([source_a, source_b])
+                loaded = load_index([source_a, source_b])
+
+            self.assertEqual(result.source_dirs, 2)
+            self.assertEqual(result.total_files, 3)
+            self.assertEqual(result.indexed_names, 2)
+            self.assertEqual(result.duplicates, 1)
+            self.assertEqual(
+                len(index[image_key("MV", "6652", "6652-A")]),
+                2,
+            )
+            self.assertEqual(loaded, index)
+
     def test_searches_by_customer_and_copies_to_customer_order(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

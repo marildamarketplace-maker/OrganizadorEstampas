@@ -7,7 +7,7 @@ CONFIG_FILE = APP_DIR / "config.json"
 INDEX_FILE = APP_DIR / "indice_estampas.json"
 
 SUPPORTED_EXTENSIONS = {
-    ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"
+    ".jpg", ".png", ".pdf"
 }
 
 DEFAULT_CONFIG = {

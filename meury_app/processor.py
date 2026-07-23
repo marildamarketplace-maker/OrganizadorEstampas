@@ -7,6 +7,7 @@ from typing import Callable
 import csv
 import re
 import shutil
+import tempfile
 import time
 
 from openpyxl import load_workbook, Workbook
@@ -251,6 +252,70 @@ def process_excel(
         report_csv=str(report_csv),
     )
     return results, summary
+
+
+def process_csv_text(
+    csv_text: str,
+    output_dir: Path,
+    index: dict[str, list[str]],
+    progress_callback: Callable[[int, int, str], None] | None = None,
+) -> tuple[list[ProcessingItem], ProcessingSummary]:
+    """Processa texto CSV, com ou sem cabeçalho, usando a mesma regra do Excel."""
+    text = csv_text.strip().lstrip("\ufeff")
+    if not text:
+        raise ValueError("Cole os pedidos no campo de texto CSV.")
+
+    try:
+        dialect = csv.Sniffer().sniff(text[:4096], delimiters=",;\t")
+        delimiter = dialect.delimiter
+    except csv.Error:
+        delimiter = "\t" if "\t" in text else ";" if ";" in text else ","
+
+    parsed_rows = [
+        [cell.strip() for cell in row]
+        for row in csv.reader(text.splitlines(), delimiter=delimiter)
+        if any(cell.strip() for cell in row)
+    ]
+    if not parsed_rows:
+        raise ValueError("O texto CSV não contém pedidos.")
+
+    expected_headers = [
+        "ID do Pedido",
+        "Data do Pedido",
+        "ID do Cliente",
+        "BASE",
+        "ID da Estampa",
+        "Variante",
+    ]
+
+    try:
+        discover_columns(parsed_rows[0])
+        rows_to_write = parsed_rows
+    except ValueError:
+        if len(parsed_rows[0]) < len(expected_headers):
+            raise ValueError(
+                "O texto CSV deve ter 6 colunas nesta ordem: "
+                + ", ".join(expected_headers)
+            )
+        rows_to_write = [expected_headers, *parsed_rows]
+
+    workbook = Workbook()
+    sheet = workbook.active
+    for row in rows_to_write:
+        sheet.append(row)
+
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as temporary:
+        temporary_path = Path(temporary.name)
+    try:
+        workbook.save(temporary_path)
+        return process_excel(
+            temporary_path,
+            output_dir,
+            index,
+            progress_callback=progress_callback,
+        )
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 def write_reports(results: list[ProcessingItem], xlsx_path: Path, csv_path: Path):

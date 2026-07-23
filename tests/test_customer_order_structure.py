@@ -18,10 +18,13 @@ class CustomerOrderStructureTest(unittest.TestCase):
             source_b = root / "origem-b"
             image_a = source_a / "MV" / "6652" / "6652-A.jpg"
             duplicate_a = source_b / "MV" / "6652" / "6652-A.png"
-            image_b = source_b / "MV" / "7001" / "7001-X.jpg"
+            image_b = source_b / "MV" / "7001" / "7001-X.pdf"
             for image in (image_a, duplicate_a, image_b):
                 image.parent.mkdir(parents=True, exist_ok=True)
                 image.write_bytes(b"imagem")
+            ignored_image = source_b / "MV" / "8000" / "8000-A.jpeg"
+            ignored_image.parent.mkdir(parents=True)
+            ignored_image.write_bytes(b"formato-nao-suportado")
 
             cache = root / "indice.json"
             with (
@@ -39,6 +42,8 @@ class CustomerOrderStructureTest(unittest.TestCase):
                 len(index[image_key("MV", "6652", "6652-A")]),
                 2,
             )
+            self.assertIn(image_key("MV", "7001", "7001-X"), index)
+            self.assertNotIn(image_key("MV", "8000", "8000-A"), index)
             self.assertEqual(loaded, index)
 
     def test_searches_by_customer_and_copies_to_customer_order(self):

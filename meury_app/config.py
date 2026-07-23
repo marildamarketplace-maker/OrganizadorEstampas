@@ -12,6 +12,7 @@ SUPPORTED_EXTENSIONS = {
 
 DEFAULT_CONFIG = {
     "excel_path": "",
+    "input_mode": "excel",
     "source_dirs": [],
     "output_dir": "",
 }

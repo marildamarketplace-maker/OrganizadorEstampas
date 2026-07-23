@@ -12,7 +12,7 @@ SUPPORTED_EXTENSIONS = {
 
 DEFAULT_CONFIG = {
     "excel_path": "",
-    "source_dir": "",
+    "source_dirs": [],
     "output_dir": "",
 }
 
@@ -49,6 +49,10 @@ def load_config():
         return DEFAULT_CONFIG.copy()
     try:
         data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        # Migra configurações antigas que aceitavam apenas uma pasta.
+        if "source_dirs" not in data:
+            old_source = str(data.get("source_dir", "")).strip()
+            data["source_dirs"] = [old_source] if old_source else []
         return {**DEFAULT_CONFIG, **data}
     except Exception:
         return DEFAULT_CONFIG.copy()

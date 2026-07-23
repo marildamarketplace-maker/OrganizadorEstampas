@@ -11,7 +11,8 @@ Aplicativo para Windows e macOS que:
 
 ## Estrutura esperada das estampas
 
-A pasta de entrada pode ter quantas subpastas forem necessárias:
+É possível adicionar uma ou várias pastas de entrada. Cada pasta pode ter quantas
+subpastas forem necessárias:
 
 ```text
 Estampas/
@@ -155,7 +156,8 @@ Ajustes do Sistema > Privacidade e Segurança > Abrir Mesmo Assim
 ## Como usar
 
 1. Clique em `Selecionar Excel`.
-2. Escolha a pasta de entrada onde estão todas as estampas.
+2. Clique em `Adicionar entrada` para cada pasta onde existam estampas.
+   Use `Remover selecionada` para retirar uma pasta da lista.
 3. Escolha a pasta de saída.
 4. Clique em `Atualizar índice`.
 5. Após concluir, clique em `GERAR PASTAS DOS PEDIDOS`.
@@ -179,6 +181,9 @@ O índice fica salvo em uma pasta oculta do usuário:
 
 - Windows: `C:\Users\SEU_USUARIO\.meury_organizador_estampas`
 - macOS: `/Users/SEU_USUARIO/.meury_organizador_estampas`
+
+O índice percorre todas as pastas de entrada adicionadas. Se a mesma estampa existir
+em mais de uma origem, ela será marcada como `DUPLICADO`.
 
 Atualize o índice quando adicionar, remover ou renomear estampas. Após instalar esta
 versão, o índice antigo será desconsiderado e deverá ser atualizado uma vez.

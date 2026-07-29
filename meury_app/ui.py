@@ -9,7 +9,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from .config import APP_NAME, load_config, save_config
-from .image_collector import collect_images
+from .image_collector import collect_images, format_size
 from .indexer import build_index, load_index
 from .processor import process_csv_text, process_excel
 
@@ -23,6 +23,7 @@ class App:
 
         self.config = load_config()
         self.index = {}
+        self.collector_cancel_event = None
 
         self.excel_var = tk.StringVar(value=self.config.get("excel_path", ""))
         self.input_mode_var = tk.StringVar(
@@ -264,6 +265,14 @@ class App:
             style="Primary.TButton",
         )
         self.collector_process_button.pack(side="left")
+        self.collector_stop_button = ttk.Button(
+            actions,
+            text="PARAR CÓPIA",
+            command=self.stop_collecting_images,
+            state="disabled",
+            style="Secondary.TButton",
+        )
+        self.collector_stop_button.pack(side="left", padx=(10, 0))
         ttk.Button(
             actions,
             text="Abrir pasta de saída",
@@ -612,7 +621,9 @@ class App:
             return
 
         self._save_paths()
+        self.collector_cancel_event = threading.Event()
         self._set_busy(True)
+        self.collector_stop_button.configure(state="normal")
         self.collector_progress.configure(mode="indeterminate", value=0)
         self.collector_progress.start(10)
         self.collector_status_var.set("Procurando imagens...")
@@ -637,6 +648,8 @@ class App:
                     total,
                     message,
                 ),
+                cancel_callback=self.collector_cancel_event.is_set,
+                confirm_callback=self._confirm_collector_copy,
             )
             self.root.after(0, self._collector_complete, result)
         except Exception as exc:
@@ -657,29 +670,105 @@ class App:
 
     def _collector_complete(self, result):
         self.collector_progress.stop()
-        self.collector_progress.configure(mode="determinate", value=100)
+        self.collector_stop_button.configure(state="disabled")
+        self.collector_cancel_event = None
+        progress_value = (
+            result.processed / result.found * 100 if result.found else 0
+        )
+        self.collector_progress.configure(
+            mode="determinate",
+            value=progress_value if result.cancelled else 100,
+        )
+        if result.declined:
+            text = (
+                f"Cópia não iniciada: {result.found:,} imagens encontradas "
+                f"({format_size(result.found_bytes)}); "
+                f"{result.planned_count:,} estavam pendentes "
+                f"({format_size(result.planned_bytes)})."
+            )
+            self.collector_status_var.set(text)
+            self._collector_log(text)
+            self._set_busy(False)
+            return
+
+        if result.cancelled:
+            text = (
+                f"Interrompido: {result.processed:,} de {result.found:,} "
+                f"imagens processadas; {result.copied:,} copiadas; "
+                f"{result.skipped:,} já existentes; "
+                f"{format_size(result.copied_bytes)} copiados."
+            )
+            self.collector_status_var.set(text)
+            self._collector_log(text)
+            self._set_busy(False)
+            messagebox.showinfo("Cópia interrompida", text)
+            return
+
         text = (
             f"Concluído: {result.found:,} imagens encontradas; "
             f"{result.copied:,} copiadas; {result.skipped:,} ignoradas."
+            f" Tamanho encontrado: {format_size(result.found_bytes)}; "
+            f"copiado: {format_size(result.copied_bytes)}."
         )
         self.collector_status_var.set(text)
         self._collector_log(text)
         if result.conflicts:
             self._collector_log(
-                "Arquivos ignorados porque o destino já existia:"
+                "Exemplos de arquivos ignorados porque o destino já existia:"
             )
             for conflict in result.conflicts:
                 self._collector_log(f"- {conflict}")
+        if result.conflicts_omitted:
+            self._collector_log(
+                f"... e mais {result.conflicts_omitted:,} arquivo(s) já existente(s)."
+            )
         self._set_busy(False)
         messagebox.showinfo("Cópia concluída", text)
 
     def _collector_error(self, message):
         self.collector_progress.stop()
+        self.collector_stop_button.configure(state="disabled")
+        self.collector_cancel_event = None
         self.collector_progress.configure(mode="determinate", value=0)
         self.collector_status_var.set("Ocorreu um erro.")
         self._collector_log(f"ERRO: {message}")
         self._set_busy(False)
         messagebox.showerror("Erro", message)
+
+    def _confirm_collector_copy(
+        self,
+        found,
+        found_bytes,
+        planned_count,
+        planned_bytes,
+    ):
+        answered = threading.Event()
+        response = {"approved": False}
+
+        def ask_permission():
+            response["approved"] = messagebox.askyesno(
+                "Confirmar cópia",
+                (
+                    f"Foram encontradas {found:,} imagens "
+                    f"({format_size(found_bytes)}).\n\n"
+                    f"Serão copiadas {planned_count:,} imagens novas "
+                    f"({format_size(planned_bytes)}).\n\n"
+                    "Deseja iniciar a cópia?"
+                ),
+            )
+            answered.set()
+
+        self.root.after(0, ask_permission)
+        answered.wait()
+        return response["approved"]
+
+    def stop_collecting_images(self):
+        if self.collector_cancel_event is None:
+            return
+        self.collector_cancel_event.set()
+        self.collector_stop_button.configure(state="disabled")
+        self.collector_status_var.set("Parando com segurança...")
+        self._collector_log("Cancelamento solicitado. Finalizando o arquivo atual...")
 
     def _show_error(self, message):
         self.progress.stop()

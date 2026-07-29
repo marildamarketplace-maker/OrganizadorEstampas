@@ -57,6 +57,12 @@ def collect_images(
                 continue
             seen_images.add(resolved)
             images.append(resolved)
+            if progress_callback and len(images) % 1000 == 0:
+                progress_callback(
+                    len(images),
+                    0,
+                    f"Procurando imagens: {len(images):,} encontradas até agora...",
+                )
 
     output.mkdir(parents=True, exist_ok=True)
     copied = 0

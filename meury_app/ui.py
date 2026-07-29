@@ -643,10 +643,15 @@ class App:
             self.root.after(0, self._collector_error, str(exc))
 
     def _collector_progress(self, current, total, message):
+        if not total:
+            self.collector_status_var.set(message)
+            self._collector_log(message)
+            return
+
         self.collector_progress.stop()
         self.collector_progress.configure(
             mode="determinate",
-            value=(current / total * 100) if total else 0,
+            value=current / total * 100,
         )
         self.collector_status_var.set(message)
 

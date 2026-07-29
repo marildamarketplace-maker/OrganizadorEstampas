@@ -97,6 +97,31 @@ class ImageCollectorTest(unittest.TestCase):
             self.assertEqual(result.copied, 1)
             self.assertEqual(result.skipped, 0)
 
+    def test_reports_search_progress_every_thousand_images(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "design"
+            output = root / "saida"
+            folder = source / "7751"
+            folder.mkdir(parents=True)
+            for number in range(1001):
+                (folder / f"{number}.png").write_bytes(b"")
+
+            updates = []
+            collect_images(
+                [source],
+                output,
+                {".png"},
+                progress_callback=lambda current, total, message: updates.append(
+                    (current, total, message)
+                ),
+            )
+
+            search_updates = [update for update in updates if update[1] == 0]
+            self.assertEqual(len(search_updates), 1)
+            self.assertEqual(search_updates[0][0], 1000)
+            self.assertIn("1,000 encontradas", search_updates[0][2])
+
 
 if __name__ == "__main__":
     unittest.main()

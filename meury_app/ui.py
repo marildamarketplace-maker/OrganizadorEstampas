@@ -9,6 +9,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from .config import APP_NAME, load_config, save_config
+from .image_collector import collect_images
 from .indexer import build_index, load_index
 from .processor import process_csv_text, process_excel
 
@@ -29,6 +30,27 @@ class App:
         )
         self.source_dirs = list(self.config.get("source_dirs", []))
         self.output_var = tk.StringVar(value=self.config.get("output_dir", ""))
+        self.collector_source_dirs = list(
+            self.config.get("collector_source_dirs", [])
+        )
+        self.collector_output_var = tk.StringVar(
+            value=self.config.get("collector_output_dir", "")
+        )
+        selected_collector_extensions = set(
+            self.config.get(
+                "collector_extensions",
+                [".jpg", ".jpeg", ".png"],
+            )
+        )
+        self.collector_extension_vars = {
+            extension: tk.BooleanVar(
+                value=extension in selected_collector_extensions
+            )
+            for extension in (".jpg", ".jpeg", ".png", ".pdf")
+        }
+        self.collector_status_var = tk.StringVar(
+            value="Selecione as entradas, os formatos e a pasta de saída."
+        )
         self.status_var = tk.StringVar(value="Selecione a planilha e as pastas.")
         self.index_status_var = tk.StringVar(value="Índice ainda não carregado.")
 
@@ -49,11 +71,22 @@ class App:
         main = ttk.Frame(self.root, padding=24)
         main.pack(fill="both", expand=True)
 
+        notebook = ttk.Notebook(main)
+        notebook.pack(fill="both", expand=True)
+        organizer_page = ttk.Frame(notebook, padding=18)
+        collector_page = ttk.Frame(notebook, padding=18)
+        notebook.add(organizer_page, text="Organizar pedidos")
+        notebook.add(collector_page, text="Copiar imagens")
+
+        self._build_organizer_tab(organizer_page)
+        self._build_collector_tab(collector_page)
+
+    def _build_organizer_tab(self, main):
         ttk.Label(main, text="Organizador de Estampas", style="Title.TLabel").pack(anchor="w")
         ttk.Label(
             main,
             text=(
-                "Busca em CLIENTE/ESTAMPA/ESTAMPA-VARIANTE e copia para "
+                "Busca em ESTAMPA/ESTAMPA-VARIANTE e copia para "
                 "CLIENTE/DATA/PEDIDO/BASE."
             ),
             style="Subtitle.TLabel",
@@ -132,6 +165,112 @@ class App:
             command=self.open_output_folder, style="Secondary.TButton"
         ).pack(side="left", padx=10)
 
+    def _build_collector_tab(self, main):
+        ttk.Label(
+            main, text="Copiar imagens por pasta", style="Title.TLabel"
+        ).pack(anchor="w")
+        ttk.Label(
+            main,
+            text=(
+                "Percorre as entradas e copia cada imagem para "
+                "SAÍDA/PASTA_DA_IMAGEM/ARQUIVO."
+            ),
+            style="Subtitle.TLabel",
+        ).pack(anchor="w", pady=(4, 20))
+
+        form = ttk.LabelFrame(main, text="Configuração", padding=16)
+        form.pack(fill="x")
+        ttk.Label(form, text="Pastas de entrada").grid(
+            row=0, column=0, sticky="nw", pady=7
+        )
+        list_frame = ttk.Frame(form)
+        list_frame.grid(row=0, column=1, sticky="ew", padx=10, pady=7)
+        list_frame.columnconfigure(0, weight=1)
+        self.collector_source_list = tk.Listbox(
+            list_frame, height=5, selectmode="extended", exportselection=False
+        )
+        self.collector_source_list.grid(row=0, column=0, sticky="ew")
+        scrollbar = ttk.Scrollbar(
+            list_frame,
+            orient="vertical",
+            command=self.collector_source_list.yview,
+        )
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        self.collector_source_list.configure(yscrollcommand=scrollbar.set)
+        self._refresh_collector_source_list()
+
+        buttons = ttk.Frame(form)
+        buttons.grid(row=0, column=2, sticky="n", pady=7)
+        self.collector_add_button = ttk.Button(
+            buttons,
+            text="Adicionar entrada",
+            command=self.select_collector_source,
+        )
+        self.collector_add_button.pack(fill="x")
+        self.collector_remove_button = ttk.Button(
+            buttons,
+            text="Remover selecionada",
+            command=self.remove_collector_sources,
+        )
+        self.collector_remove_button.pack(fill="x", pady=(6, 0))
+
+        ttk.Label(form, text="Formatos").grid(
+            row=1, column=0, sticky="w", pady=7
+        )
+        formats = ttk.Frame(form)
+        formats.grid(row=1, column=1, sticky="w", padx=10, pady=7)
+        self.collector_format_buttons = []
+        for extension, variable in self.collector_extension_vars.items():
+            button = ttk.Checkbutton(
+                formats,
+                text=extension.removeprefix(".").upper(),
+                variable=variable,
+                command=self._save_paths,
+            )
+            button.pack(side="left", padx=(0, 12))
+            self.collector_format_buttons.append(button)
+
+        self._path_row(
+            form,
+            2,
+            "Pasta de saída",
+            self.collector_output_var,
+            "Selecionar saída",
+            self.select_collector_output,
+        )
+        form.columnconfigure(1, weight=1)
+
+        process_frame = ttk.LabelFrame(main, text="Copiar imagens", padding=16)
+        process_frame.pack(fill="both", expand=True, pady=(16, 0))
+        self.collector_progress = ttk.Progressbar(
+            process_frame, mode="determinate", maximum=100
+        )
+        self.collector_progress.pack(fill="x", pady=(0, 10))
+        ttk.Label(
+            process_frame,
+            textvariable=self.collector_status_var,
+            wraplength=760,
+        ).pack(anchor="w")
+        self.collector_log = tk.Text(
+            process_frame, height=12, state="disabled", wrap="word"
+        )
+        self.collector_log.pack(fill="both", expand=True, pady=12)
+        actions = ttk.Frame(process_frame)
+        actions.pack(fill="x")
+        self.collector_process_button = ttk.Button(
+            actions,
+            text="COPIAR IMAGENS",
+            command=self.start_collecting_images,
+            style="Primary.TButton",
+        )
+        self.collector_process_button.pack(side="left")
+        ttk.Button(
+            actions,
+            text="Abrir pasta de saída",
+            command=self.open_collector_output,
+            style="Secondary.TButton",
+        ).pack(side="left", padx=10)
+
     def _path_row(self, parent, row, label, variable, button_text, command):
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=7)
         ttk.Entry(parent, textvariable=variable).grid(
@@ -204,6 +343,13 @@ class App:
         for source in self.source_dirs:
             self.source_list.insert("end", source)
 
+    def _refresh_collector_source_list(self):
+        if not hasattr(self, "collector_source_list"):
+            return
+        self.collector_source_list.delete(0, "end")
+        for source in self.collector_source_dirs:
+            self.collector_source_list.insert("end", source)
+
     def select_excel(self):
         path = filedialog.askopenfilename(
             title="Selecione a planilha",
@@ -238,10 +384,36 @@ class App:
             "Pastas alteradas. Clique em Atualizar índice."
         )
 
+    def select_collector_source(self):
+        path = filedialog.askdirectory(
+            title="Adicione uma pasta para procurar imagens"
+        )
+        if path and path not in self.collector_source_dirs:
+            self.collector_source_dirs.append(path)
+            self._refresh_collector_source_list()
+            self._save_paths()
+
+    def remove_collector_sources(self):
+        selected = list(self.collector_source_list.curselection())
+        if not selected:
+            return
+        for index in reversed(selected):
+            del self.collector_source_dirs[index]
+        self._refresh_collector_source_list()
+        self._save_paths()
+
     def select_output(self):
         path = filedialog.askdirectory(title="Selecione a pasta de saída")
         if path:
             self.output_var.set(path)
+            self._save_paths()
+
+    def select_collector_output(self):
+        path = filedialog.askdirectory(
+            title="Selecione a pasta de saída das imagens"
+        )
+        if path:
+            self.collector_output_var.set(path)
             self._save_paths()
 
     def _save_paths(self):
@@ -250,6 +422,13 @@ class App:
             "input_mode": self.input_mode_var.get(),
             "source_dirs": self.source_dirs,
             "output_dir": self.output_var.get(),
+            "collector_source_dirs": self.collector_source_dirs,
+            "collector_output_dir": self.collector_output_var.get(),
+            "collector_extensions": [
+                extension
+                for extension, variable in self.collector_extension_vars.items()
+                if variable.get()
+            ],
         })
 
     def _try_load_saved_index(self):
@@ -316,6 +495,15 @@ class App:
             f"Pastas: {result.source_dirs}. Arquivos: {result.total_files:,}. "
             f"Duplicados: {result.duplicates:,}."
         )
+        if result.duplicates_log:
+            self._log(f"Log de duplicidades: {result.duplicates_log}")
+        alert = (
+            f"Imagens encontradas: {result.total_files:,}\n"
+            f"Duplicidades: {result.duplicates:,}"
+        )
+        if result.duplicates_log:
+            alert += f"\n\nConsulte o log para ajustar manualmente:\n{result.duplicates_log}"
+        messagebox.showinfo("Índice concluído", alert)
         self._set_busy(False)
 
     def start_processing(self):
@@ -407,6 +595,87 @@ class App:
         self._set_busy(False)
         messagebox.showinfo("Processamento concluído", text)
 
+    def start_collecting_images(self):
+        sources = [Path(source) for source in self.collector_source_dirs]
+        output = self.collector_output_var.get().strip()
+        extensions = {
+            extension
+            for extension, variable in self.collector_extension_vars.items()
+            if variable.get()
+        }
+        if not sources or not output or not extensions:
+            messagebox.showwarning(
+                "Atenção",
+                "Adicione uma entrada, selecione ao menos um formato "
+                "e informe a pasta de saída.",
+            )
+            return
+
+        self._save_paths()
+        self._set_busy(True)
+        self.collector_progress.configure(mode="indeterminate", value=0)
+        self.collector_progress.start(10)
+        self.collector_status_var.set("Procurando imagens...")
+        self._collector_log("Iniciando busca e cópia das imagens.")
+        thread = threading.Thread(
+            target=self._collector_worker,
+            args=(sources, Path(output), extensions),
+            daemon=True,
+        )
+        thread.start()
+
+    def _collector_worker(self, sources, output, extensions):
+        try:
+            result = collect_images(
+                sources,
+                output,
+                extensions,
+                progress_callback=lambda current, total, message: self.root.after(
+                    0,
+                    self._collector_progress,
+                    current,
+                    total,
+                    message,
+                ),
+            )
+            self.root.after(0, self._collector_complete, result)
+        except Exception as exc:
+            self.root.after(0, self._collector_error, str(exc))
+
+    def _collector_progress(self, current, total, message):
+        self.collector_progress.stop()
+        self.collector_progress.configure(
+            mode="determinate",
+            value=(current / total * 100) if total else 0,
+        )
+        self.collector_status_var.set(message)
+
+    def _collector_complete(self, result):
+        self.collector_progress.stop()
+        self.collector_progress.configure(mode="determinate", value=100)
+        text = (
+            f"Concluído: {result.found:,} imagens encontradas; "
+            f"{result.copied:,} copiadas; {result.skipped:,} ignoradas."
+        )
+        self.collector_status_var.set(text)
+        self._collector_log(text)
+        if result.conflicts:
+            self._collector_log(
+                "Arquivos ignorados porque o destino já existia:"
+            )
+            for conflict in result.conflicts:
+                self._collector_log(f"- {conflict}")
+        self._set_busy(False)
+        messagebox.showinfo("Cópia concluída", text)
+
+    def _collector_error(self, message):
+        self.collector_progress.stop()
+        self.collector_progress.configure(mode="determinate", value=0)
+        self.collector_status_var.set("Ocorreu um erro.")
+        self._collector_log(f"ERRO: {message}")
+        self._set_busy(False)
+        messagebox.showerror("Erro", message)
+
     def _show_error(self, message):
         self.progress.stop()
         self.progress.configure(mode="determinate", value=0)
@@ -423,6 +692,11 @@ class App:
         self.remove_source_button.configure(state=state)
         self.excel_mode_button.configure(state=state)
         self.csv_mode_button.configure(state=state)
+        self.collector_process_button.configure(state=state)
+        self.collector_add_button.configure(state=state)
+        self.collector_remove_button.configure(state=state)
+        for button in self.collector_format_buttons:
+            button.configure(state=state)
 
     def _log(self, text):
         self.log.configure(state="normal")
@@ -430,8 +704,19 @@ class App:
         self.log.see("end")
         self.log.configure(state="disabled")
 
+    def _collector_log(self, text):
+        self.collector_log.configure(state="normal")
+        self.collector_log.insert("end", text + "\n")
+        self.collector_log.see("end")
+        self.collector_log.configure(state="disabled")
+
     def open_output_folder(self):
         path = self.output_var.get().strip()
+        if path:
+            self._open_path(Path(path))
+
+    def open_collector_output(self):
+        path = self.collector_output_var.get().strip()
         if path:
             self._open_path(Path(path))
 

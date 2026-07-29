@@ -11,6 +11,35 @@ from meury_app.processor import process_csv_text, process_excel
 
 
 class CustomerOrderStructureTest(unittest.TestCase):
+    def test_index_uses_design_folder_and_ignores_intermediate_folders(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "design"
+            direct_image = source / "3232" / "3232-A.jpg"
+            nested_image = (
+                source / "asdkjasd" / "clientex" / "asd"
+                / "5151" / "5151-A.jpg"
+            )
+            for image in (direct_image, nested_image):
+                image.parent.mkdir(parents=True, exist_ok=True)
+                image.write_bytes(b"imagem")
+
+            cache = root / "indice.json"
+            duplicates_log = root / "duplicidades.txt"
+            with (
+                patch.object(indexer_module, "INDEX_FILE", cache),
+                patch.object(indexer_module, "DUPLICATES_LOG_FILE", duplicates_log),
+                patch.object(indexer_module, "ensure_app_dir"),
+            ):
+                index, result = build_index(source)
+
+            self.assertIn(image_key("3232", "3232-A"), index)
+            self.assertIn(image_key("5151", "5151-A"), index)
+            self.assertEqual(result.total_files, 2)
+            self.assertEqual(result.duplicates, 0)
+            self.assertIsNone(result.duplicates_log)
+            self.assertFalse(duplicates_log.exists())
+
     def test_processes_csv_text_without_header_in_excel_column_order(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -20,7 +49,7 @@ class CustomerOrderStructureTest(unittest.TestCase):
             output = root / "saida"
             csv_text = "pedido-csv;23/07/2026;cliente-csv;base-csv;6652;a"
             index = {
-                image_key("MV", "6652", "6652-A"): [str(source)],
+                image_key("6652", "6652-A"): [str(source)],
             }
 
             results, summary = process_csv_text(csv_text, output, index)
@@ -56,8 +85,10 @@ class CustomerOrderStructureTest(unittest.TestCase):
             ignored_image.write_bytes(b"formato-nao-suportado")
 
             cache = root / "indice.json"
+            duplicates_log = root / "duplicidades.txt"
             with (
                 patch.object(indexer_module, "INDEX_FILE", cache),
+                patch.object(indexer_module, "DUPLICATES_LOG_FILE", duplicates_log),
                 patch.object(indexer_module, "ensure_app_dir"),
             ):
                 index, result = build_index([source_a, source_b])
@@ -68,12 +99,16 @@ class CustomerOrderStructureTest(unittest.TestCase):
             self.assertEqual(result.indexed_names, 2)
             self.assertEqual(result.duplicates, 1)
             self.assertEqual(
-                len(index[image_key("MV", "6652", "6652-A")]),
+                len(index[image_key("6652", "6652-A")]),
                 2,
             )
-            self.assertIn(image_key("MV", "7001", "7001-X"), index)
-            self.assertNotIn(image_key("MV", "8000", "8000-A"), index)
+            self.assertIn(image_key("7001", "7001-X"), index)
+            self.assertNotIn(image_key("8000", "8000-A"), index)
             self.assertEqual(loaded, index)
+            self.assertEqual(result.duplicates_log, str(duplicates_log.resolve()))
+            log_text = duplicates_log.read_text(encoding="utf-8")
+            self.assertIn(str(image_a.resolve()), log_text)
+            self.assertIn(str(duplicate_a.resolve()), log_text)
 
     def test_searches_by_customer_and_copies_to_customer_order(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -101,8 +136,8 @@ class CustomerOrderStructureTest(unittest.TestCase):
             workbook.save(excel)
 
             index = {
-                image_key("MV", "6652", "6652-A"): [str(mv_image)],
-                image_key("CLIENTE1", "MV5501", "MV5501-A"): [str(client_image)],
+                image_key("6652", "6652-A"): [str(mv_image)],
+                image_key("MV5501", "MV5501-A"): [str(client_image)],
             }
             results, summary = process_excel(excel, output, index)
 

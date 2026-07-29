@@ -6,10 +6,15 @@ from typing import Callable
 import json
 import time
 
-from .config import INDEX_FILE, SUPPORTED_EXTENSIONS, ensure_app_dir
+from .config import (
+    DUPLICATES_LOG_FILE,
+    INDEX_FILE,
+    SUPPORTED_EXTENSIONS,
+    ensure_app_dir,
+)
 
 
-INDEX_VERSION = 4
+INDEX_VERSION = 5
 
 
 @dataclass
@@ -19,15 +24,16 @@ class IndexResult:
     duplicates: int
     source_dirs: int
     elapsed_seconds: float
+    duplicates_log: str | None
 
 
 def normalize_key(value: str) -> str:
     return value.strip().casefold()
 
 
-def image_key(cliente: str, estampa: str, arquivo: str) -> str:
-    """Cria a chave da estrutura Cliente/Estampa/arquivo."""
-    return "\u0000".join(normalize_key(part) for part in (cliente, estampa, arquivo))
+def image_key(estampa: str, arquivo: str) -> str:
+    """Cria a chave da estrutura Estampa/arquivo."""
+    return "\u0000".join(normalize_key(part) for part in (estampa, arquivo))
 
 
 def normalize_source_dirs(source_dirs: Path | list[Path]) -> list[Path]:
@@ -72,14 +78,13 @@ def build_index(
                 continue
 
             total_files += 1
-            # Só indexa imagens na estrutura Cliente/Estampa/Estampa-Variante.ext.
+            # As pastas anteriores são livres; só Estampa/arquivo é relevante.
             relative = path.relative_to(source_dir)
-            if len(relative.parts) < 3:
+            if len(relative.parts) < 2:
                 continue
 
-            cliente = relative.parts[-3]
             estampa = relative.parts[-2]
-            key = image_key(cliente, estampa, path.stem)
+            key = image_key(estampa, path.stem)
             index.setdefault(key, []).append(str(path.resolve()))
 
             if progress_callback and total_files % 250 == 0:
@@ -89,6 +94,9 @@ def build_index(
                 )
 
     duplicates = sum(1 for paths in index.values() if len(paths) > 1)
+    duplicate_items = [
+        (key, paths) for key, paths in index.items() if len(paths) > 1
+    ]
     payload = {
         "version": INDEX_VERSION,
         "source_dirs": [str(source) for source in sources],
@@ -101,6 +109,26 @@ def build_index(
         json.dumps(payload, ensure_ascii=False),
         encoding="utf-8"
     )
+    duplicates_log: str | None = None
+    if duplicate_items:
+        log_lines = [
+            "DUPLICIDADES ENCONTRADAS NA CRIAÇÃO DO ÍNDICE",
+            f"Data: {payload['created_at']}",
+            f"Grupos duplicados: {duplicates}",
+            "",
+        ]
+        for key, paths in sorted(duplicate_items):
+            estampa, arquivo = key.split("\u0000", maxsplit=1)
+            log_lines.append(f"Estampa: {estampa} | Arquivo: {arquivo}")
+            log_lines.extend(f"  - {path}" for path in paths)
+            log_lines.append("")
+        DUPLICATES_LOG_FILE.write_text(
+            "\n".join(log_lines),
+            encoding="utf-8",
+        )
+        duplicates_log = str(DUPLICATES_LOG_FILE.resolve())
+    elif DUPLICATES_LOG_FILE.exists():
+        DUPLICATES_LOG_FILE.unlink()
 
     result = IndexResult(
         total_files=total_files,
@@ -108,6 +136,7 @@ def build_index(
         duplicates=duplicates,
         source_dirs=len(sources),
         elapsed_seconds=time.time() - started,
+        duplicates_log=duplicates_log,
     )
     return index, result
 

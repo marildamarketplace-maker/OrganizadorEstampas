@@ -86,11 +86,6 @@ def clean_order_date(value) -> tuple[str, str]:
     return display, safe_folder_name(display)
 
 
-def source_customer(cliente: str, estampa: str) -> str:
-    """Define a pasta de origem conforme o prefixo da estampa."""
-    return cliente if estampa.startswith("MV") else "MV"
-
-
 def safe_folder_name(value: str) -> str:
     value = value.strip()
     value = re.sub(r'[<>:"/\\|?*]', "_", value)
@@ -190,14 +185,13 @@ def process_excel(
             results.append(item)
             continue
 
-        source_cliente = source_customer(cliente, estampa)
-        key = image_key(source_cliente, estampa, searched_name)
+        key = image_key(estampa, searched_name)
         matches = index.get(key, [])
 
         if not matches:
             item.status = "NÃO ENCONTRADO"
             item.observacao = (
-                f"Nenhuma imagem em '{source_cliente}/{estampa}/{searched_name}'."
+                f"Nenhuma imagem para '{estampa}/{searched_name}'."
             )
             missing += 1
         elif len(matches) > 1:

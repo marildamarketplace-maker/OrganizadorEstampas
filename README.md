@@ -4,10 +4,26 @@ Aplicativo para Windows e macOS que:
 
 1. Lê uma planilha Excel.
 2. Agrupa os itens pelo ID do cliente e ID do pedido.
-3. Procura imagens em `ID_DO_CLIENTE/ID_DA_ESTAMPA/ID_DA_ESTAMPA-VARIANTE`.
+3. Procura imagens em `ID_DA_ESTAMPA/ID_DA_ESTAMPA-VARIANTE`.
 4. Cria as pastas `ID_DO_CLIENTE/DATA/ID_DO_PEDIDO/BASE` na saída.
 5. Copia as imagens localizadas para a pasta do cliente e pedido.
 6. Gera relatório em Excel e CSV.
+
+## Copiar imagens por pasta
+
+A aba **Copiar imagens** permite adicionar uma ou mais pastas de entrada,
+selecionar os formatos JPG, JPEG, PNG e PDF e definir uma pasta de saída. A busca
+percorre todas as subpastas.
+
+Cada arquivo é copiado mantendo somente o nome da pasta imediatamente anterior:
+
+```text
+Entrada: design/clientes/7751/7751-A.png
+Saída:   saida/7751/7751-A.png
+```
+
+Arquivos que já existirem no destino não são sobrescritos. Eles são ignorados e
+listados no log da aba ao final do processamento.
 
 ## Estrutura esperada das estampas
 
@@ -29,18 +45,14 @@ Estampas/
         └── 7001-X.jpg
 ```
 
-Cada imagem deve estar na pasta do cliente e da estampa. O caminho deve ser:
+Cada imagem deve estar na pasta da estampa. O caminho deve terminar em:
 
 ```text
-ID_DO_CLIENTE/ID_DA_ESTAMPA/ID_DA_ESTAMPA-VARIANTE.extensão
+ID_DA_ESTAMPA/ID_DA_ESTAMPA-VARIANTE.extensão
 ```
 
-Regra da pasta de origem:
-
-- Se o ID da estampa começar com `MV`, a busca usa a pasta do `ID do Cliente`.
-- Se o ID da estampa não começar com `MV`, a busca usa a pasta compartilhada `MV`.
-
-Exemplos: `CLIENTE1/MV5501/MV5501-A.jpg` e `MV/6652/6652-A.jpg`.
+Podem existir quantas pastas intermediárias forem necessárias antes da pasta da
+estampa. Elas não fazem parte da identificação da imagem.
 
 Exemplos:
 
@@ -198,6 +210,11 @@ O índice fica salvo em uma pasta oculta do usuário:
 
 O índice percorre todas as pastas de entrada adicionadas. Se a mesma estampa existir
 em mais de uma origem, ela será marcada como `DUPLICADO`.
+
+Ao terminar, o aplicativo informa quantas imagens foram encontradas e quantas
+duplicidades existem. Quando houver duplicidades, todos os caminhos conflitantes
+serão gravados em `duplicidades_indice.txt`, junto ao cache do índice, para ajuste
+manual. As duplicidades não interrompem a criação do índice.
 
 Atualize o índice quando adicionar, remover ou renomear estampas. Após instalar esta
 versão, o índice antigo será desconsiderado e deverá ser atualizado uma vez.

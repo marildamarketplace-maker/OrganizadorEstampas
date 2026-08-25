@@ -127,6 +127,19 @@ No JSON, código e nome são combinados com hífens nas pastas. Por exemplo:
 Por isso, `clienteCodigo`, `clienteNome`, `tecidoCodigo` e `tecidoNome` são
 obrigatórios.
 
+## Processamento de vários PDFs pelo Codex
+
+1. Coloque os pedidos em `pedidos_pdf/entrada`.
+2. Execute `./pedidos_pdf/processar_pedidos_lote.sh`.
+3. Consulte a pasta mais recente em `pedidos_pdf/relatorios`.
+
+Cada PDF novo recebe uma execução isolada do prompt. O controle usa o conteúdo do
+arquivo, e não apenas o nome: um PDF concluído continua sendo reconhecido se for
+renomeado. Os relatórios do lote separam sucessos, falhas e arquivos já processados.
+O arquivo `historico_processados.csv` lista todos os pedidos concluídos até o momento.
+Qualquer pendência é classificada como falha. Falhas ficam no histórico e são tentadas
+novamente na execução seguinte.
+
 ## Instalação para testar com Python
 
 ### Windows

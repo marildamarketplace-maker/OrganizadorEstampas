@@ -6,6 +6,8 @@ __pycache__/
 # Arquivos gerados pelo aplicativo
 pedidos/
 outputs/
+pedidos_pdf/relatorios/
+pedidos_pdf/.controle/
 dist/
 build/
 *.spec
@@ -16,4 +18,3 @@ estampas/
 # Arquivos antigos e temporários
 planilha_modelo_old.xlsx
 *.inspect.ndjson
-

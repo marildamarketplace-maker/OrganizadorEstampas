@@ -1,0 +1,6 @@
+Coloque nesta pasta os PDFs dos pedidos e execute, na raiz do projeto:
+
+./pedidos_pdf/processar_pedidos_lote.sh
+
+PDFs concluídos não serão processados novamente, mesmo se forem renomeados.
+PDFs com falha serão tentados novamente na próxima execução.

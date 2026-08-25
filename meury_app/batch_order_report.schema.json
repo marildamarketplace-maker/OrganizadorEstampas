@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "pedido": { "type": "string" },
+    "pastaCriada": { "type": "string" },
+    "quantidadeCopiada": { "type": "integer", "minimum": 0 },
+    "copiadas": { "type": "array", "items": { "type": "string" } },
+    "naoEncontradas": { "type": "array", "items": { "type": "string" } },
+    "duplicadas": { "type": "array", "items": { "type": "string" } },
+    "jaExistentes": { "type": "array", "items": { "type": "string" } },
+    "erros": { "type": "array", "items": { "type": "string" } },
+    "resultadoFinal": {
+      "type": "string",
+      "enum": ["SUCESSO", "FALHA"]
+    }
+  },
+  "required": [
+    "pedido",
+    "pastaCriada",
+    "quantidadeCopiada",
+    "copiadas",
+    "naoEncontradas",
+    "duplicadas",
+    "jaExistentes",
+    "erros",
+    "resultadoFinal"
+  ]
+}

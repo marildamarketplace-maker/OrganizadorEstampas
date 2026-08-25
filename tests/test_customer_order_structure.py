@@ -7,10 +7,90 @@ from openpyxl import Workbook
 
 import meury_app.indexer as indexer_module
 from meury_app.indexer import build_index, image_key, load_index
-from meury_app.processor import process_csv_text, process_excel
+from meury_app.processor import process_csv_text, process_excel, process_order_payload
 
 
 class CustomerOrderStructureTest(unittest.TestCase):
+    def test_processes_pdf_extraction_json_without_interface(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "estampas" / "6162" / "6162-A.jpg"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"imagem")
+            output = root / "saida"
+            payload = {
+                "pedido": "85951917582",
+                "data": "05-08-2026",
+                "clienteCodigo": "1710",
+                "clienteNome": "MV PRINTS LTDA",
+                "produtos": [{
+                    "tecidoCodigo": "1416",
+                    "tecidoNome": "TRICOLINE",
+                    "estampa": "6162",
+                    "variante": "A",
+                }],
+            }
+
+            results, summary = process_order_payload(
+                payload,
+                output,
+                {image_key("6162", "6162-A"): [str(source)]},
+            )
+
+            self.assertEqual(summary.copiados, 1)
+            self.assertEqual(results[0].cliente, "1710-MV-PRINTS-LTDA")
+            self.assertEqual(results[0].base, "1416-TRICOLINE")
+            self.assertTrue(
+                (
+                    output / "1710-MV-PRINTS-LTDA" / "05-08-2026"
+                    / "85951917582" / "1416-TRICOLINE" / "6162-A.JPG"
+                ).exists()
+            )
+
+    def test_rejects_incomplete_pdf_extraction_json(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaisesRegex(ValueError, "tecidoCodigo"):
+                process_order_payload(
+                    {
+                        "pedido": "1",
+                        "data": "05-08-2026",
+                        "clienteCodigo": "1710",
+                        "clienteNome": "MV PRINTS LTDA",
+                        "produtos": [{"estampa": "6162", "variante": "A"}],
+                    },
+                    Path(temporary),
+                    {},
+                )
+
+    def test_creates_order_and_base_folders_when_image_is_not_found(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "saida"
+            _, summary = process_order_payload(
+                {
+                    "pedido": "85951917582",
+                    "data": "05-08-2026",
+                    "clienteCodigo": "1710",
+                    "clienteNome": "MV PRINTS LTDA",
+                    "produtos": [{
+                        "tecidoCodigo": "1416",
+                        "tecidoNome": "TRICOLINE",
+                        "estampa": "9999",
+                        "variante": "Z",
+                    }],
+                },
+                output,
+                {},
+            )
+
+            self.assertEqual(summary.nao_encontrados, 1)
+            self.assertEqual(summary.pedidos_criados, 1)
+            self.assertTrue(
+                (
+                    output / "1710-MV-PRINTS-LTDA" / "05-08-2026"
+                    / "85951917582" / "1416-TRICOLINE"
+                ).is_dir()
+            )
+
     def test_index_uses_design_folder_and_ignores_intermediate_folders(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

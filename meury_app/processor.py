@@ -5,6 +5,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Callable
 import csv
+import json
 import re
 import shutil
 import tempfile
@@ -91,6 +92,14 @@ def safe_folder_name(value: str) -> str:
     value = re.sub(r'[<>:"/\\|?*]', "_", value)
     value = value.rstrip(". ")
     return value or "SEM_NOME"
+
+
+def identifier_name_folder(identifier, name) -> str:
+    """Monta pastas como CODIGO-NOME-DA-ENTIDADE."""
+    identifier_part = clean_identifier(identifier)
+    name_part = clean_identifier(name)
+    name_part = re.sub(r"\s+", "-", name_part.strip())
+    return safe_folder_name(f"{identifier_part}-{name_part}")
 
 
 def discover_columns(headers: list) -> dict[str, int]:
@@ -310,6 +319,99 @@ def process_csv_text(
         )
     finally:
         temporary_path.unlink(missing_ok=True)
+
+
+def process_order_payload(
+    payload: dict,
+    output_dir: Path,
+    index: dict[str, list[str]],
+    progress_callback: Callable[[int, int, str], None] | None = None,
+) -> tuple[list[ProcessingItem], ProcessingSummary]:
+    """Processa o JSON extraído de um PDF de pedido, sem depender da interface."""
+    if not isinstance(payload, dict):
+        raise ValueError("O conteúdo do pedido deve ser um objeto JSON.")
+
+    required = ("pedido", "data", "clienteCodigo", "clienteNome", "produtos")
+    missing = [field for field in required if not payload.get(field)]
+    if missing:
+        raise ValueError(
+            "Campos obrigatórios ausentes no JSON: " + ", ".join(missing)
+        )
+
+    products = payload["produtos"]
+    if not isinstance(products, list) or not products:
+        raise ValueError("O campo 'produtos' deve conter pelo menos um produto.")
+
+    rows = []
+    base_folders: set[str] = set()
+    product_fields = ("tecidoCodigo", "tecidoNome", "estampa", "variante")
+    for position, product in enumerate(products, start=1):
+        if not isinstance(product, dict):
+            raise ValueError(f"O produto {position} deve ser um objeto JSON.")
+        product_missing = [field for field in product_fields if not product.get(field)]
+        if product_missing:
+            raise ValueError(
+                f"Campos ausentes no produto {position}: "
+                + ", ".join(product_missing)
+            )
+        product_folder = identifier_name_folder(
+            product["tecidoCodigo"], product["tecidoNome"]
+        )
+        customer_folder = identifier_name_folder(
+            payload["clienteCodigo"], payload["clienteNome"]
+        )
+        rows.append([
+            payload["pedido"],
+            payload["data"],
+            customer_folder,
+            product_folder,
+            product["estampa"],
+            product["variante"],
+        ])
+        base_folders.add(product_folder)
+
+    pedido = clean_identifier(payload["pedido"])
+    cliente_folder = identifier_name_folder(
+        payload["clienteCodigo"], payload["clienteNome"]
+    )
+    _, data_folder = clean_order_date(payload["data"])
+    order_folder = (
+        output_dir
+        / cliente_folder
+        / data_folder
+        / safe_folder_name(pedido)
+    )
+    # A pasta do pedido deve existir mesmo quando alguma imagem não for localizada.
+    for base in base_folders:
+        (order_folder / safe_folder_name(base)).mkdir(parents=True, exist_ok=True)
+
+    csv_text = "\n".join(
+        ";".join(clean_cell(value) for value in row) for row in rows
+    )
+    results, summary = process_csv_text(
+        csv_text,
+        output_dir,
+        index,
+        progress_callback=progress_callback,
+    )
+    summary.pedidos_criados = 1
+    return results, summary
+
+
+def process_order_json(
+    json_text: str,
+    output_dir: Path,
+    index: dict[str, list[str]],
+    progress_callback: Callable[[int, int, str], None] | None = None,
+) -> tuple[list[ProcessingItem], ProcessingSummary]:
+    """Converte texto JSON e cria a estrutura do pedido."""
+    try:
+        payload = json.loads(json_text.lstrip("\ufeff"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"JSON inválido na linha {exc.lineno}, coluna {exc.colno}: {exc.msg}"
+        ) from exc
+    return process_order_payload(payload, output_dir, index, progress_callback)
 
 
 def write_reports(results: list[ProcessingItem], xlsx_path: Path, csv_path: Path):

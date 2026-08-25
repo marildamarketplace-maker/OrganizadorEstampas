@@ -105,6 +105,28 @@ PEDIDO1;18/07/2026;CLIENTE1;BASE1;6652;A
 PEDIDO1;18/07/2026;CLIENTE1;BASE1;7001;X
 ```
 
+## Criação pelo Codex, sem abrir a interface
+
+Depois de extrair o PDF, o Codex pode entregar o objeto JSON diretamente ao comando
+`criar_pedido.py`. O comando usa as pastas de estampas e de saída que foram salvas
+anteriormente no aplicativo, carrega o índice existente (ou o cria se necessário),
+cria a pasta do pedido e copia os arquivos encontrados.
+
+```bash
+python criar_pedido.py pedido.json
+```
+
+Também é possível informar os caminhos sem usar a configuração da interface:
+
+```bash
+python criar_pedido.py pedido.json --origem "/pasta/estampas" --saida "/pasta/pedidos"
+```
+
+No JSON, código e nome são combinados com hífens nas pastas. Por exemplo:
+`1710-MV-PRINTS-LTDA/05-08-2026/85951917582/1416-TRICOLINE`.
+Por isso, `clienteCodigo`, `clienteNome`, `tecidoCodigo` e `tecidoNome` são
+obrigatórios.
+
 ## Instalação para testar com Python
 
 ### Windows

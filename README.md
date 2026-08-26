@@ -223,7 +223,9 @@ Ajustes do Sistema > Privacidade e Segurança > Abrir Mesmo Assim
 2. Clique em `Adicionar entrada` para cada pasta onde existam estampas.
    Use `Remover selecionada` para retirar uma pasta da lista.
 3. Escolha a pasta de saída.
-4. Clique em `Atualizar índice`.
+4. Na primeira vez, clique em `Atualizar índice completo`. Depois, use `Adicionar
+   imagens novas` para atualizações rápidas. Use novamente a atualização completa
+   quando excluir ou renomear imagens.
 5. Após concluir, clique em `GERAR PASTAS DOS PEDIDOS`.
 6. Confira o relatório criado na pasta de saída.
 

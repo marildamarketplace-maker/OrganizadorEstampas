@@ -10,7 +10,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from .config import APP_NAME, load_config, save_config
 from .image_collector import collect_images, format_size
-from .indexer import build_index, load_index
+from .indexer import build_index, load_index, update_index_incremental
 from .processor import process_csv_text, process_excel
 
 
@@ -179,10 +179,17 @@ class App:
         button_line = ttk.Frame(index_frame)
         button_line.pack(fill="x", pady=(10, 0))
         self.index_button = ttk.Button(
-            button_line, text="Atualizar índice", command=self.start_indexing,
+            button_line, text="Atualizar índice completo", command=self.start_indexing,
             style="Secondary.TButton"
         )
         self.index_button.pack(side="left")
+        self.incremental_index_button = ttk.Button(
+            button_line,
+            text="Adicionar imagens novas",
+            command=self.start_incremental_indexing,
+            style="Secondary.TButton",
+        )
+        self.incremental_index_button.pack(side="left", padx=(8, 0))
         ttk.Button(
             button_line, text="Abrir pasta de configurações",
             command=self.open_app_folder, style="Secondary.TButton"
@@ -562,6 +569,65 @@ class App:
         messagebox.showinfo("Índice concluído", alert)
         self._set_busy(False)
 
+    def start_incremental_indexing(self):
+        sources = [Path(source) for source in self.source_dirs]
+        if not sources:
+            messagebox.showwarning(
+                "Atenção",
+                "Adicione pelo menos uma pasta de entrada das estampas.",
+            )
+            return
+
+        self._set_busy(True)
+        self.progress.configure(mode="indeterminate")
+        self.progress.start(10)
+        self.status_var.set("Procurando imagens novas. Aguarde a conclusão.")
+        self._log("Iniciando atualização rápida do índice...")
+        thread = threading.Thread(
+            target=self._incremental_index_worker,
+            args=(sources,),
+            daemon=True,
+        )
+        thread.start()
+
+    def _incremental_index_worker(self, sources):
+        try:
+            index, result = update_index_incremental(
+                sources,
+                progress_callback=lambda count, msg: self.root.after(
+                    0, self._index_progress, count, msg
+                ),
+            )
+            self.index = index
+            self.root.after(0, self._incremental_index_complete, result)
+        except Exception as exc:
+            self.root.after(0, self._show_error, str(exc))
+
+    def _incremental_index_complete(self, result):
+        self.progress.stop()
+        self.progress.configure(mode="determinate", value=100)
+        self.index_status_var.set(
+            f"Índice atualizado: {result.added_files:,} imagens novas; "
+            f"{result.indexed_names:,} nomes; {result.duplicates:,} duplicados."
+        )
+        self.status_var.set("Atualização rápida concluída.")
+        self._log(
+            f"Atualização rápida concluída em {result.elapsed_seconds:.1f}s. "
+            f"Imagens verificadas: {result.scanned_files:,}. "
+            f"Novas: {result.added_files:,}. Duplicados: {result.duplicates:,}."
+        )
+        if result.duplicates_log:
+            self._log(f"Log de duplicidades: {result.duplicates_log}")
+        alert = (
+            f"Imagens novas adicionadas: {result.added_files:,}\n"
+            f"Duplicidades no índice: {result.duplicates:,}\n\n"
+            "Use a atualização completa após excluir ou renomear imagens."
+        )
+        if result.duplicates_log:
+            alert += f"\n\nLog de duplicidades:\n{result.duplicates_log}"
+        messagebox.showinfo("Imagens novas adicionadas", alert)
+        self._set_busy(False)
+
     def start_processing(self):
         excel = self.excel_var.get().strip()
         input_mode = self.input_mode_var.get()
@@ -828,6 +894,7 @@ class App:
     def _set_busy(self, busy):
         state = "disabled" if busy else "normal"
         self.index_button.configure(state=state)
+        self.incremental_index_button.configure(state=state)
         self.process_button.configure(state=state)
         self.add_source_button.configure(state=state)
         self.remove_source_button.configure(state=state)

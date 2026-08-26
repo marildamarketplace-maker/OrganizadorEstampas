@@ -6,11 +6,70 @@ from unittest.mock import patch
 from openpyxl import Workbook
 
 import meury_app.indexer as indexer_module
-from meury_app.indexer import build_index, image_key, load_index
+from meury_app.indexer import (
+    build_index,
+    image_key,
+    load_index,
+    update_index_incremental,
+)
 from meury_app.processor import process_csv_text, process_excel, process_order_payload
 
 
 class CustomerOrderStructureTest(unittest.TestCase):
+    def test_incremental_index_adds_new_images_without_repeating_existing_ones(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "estampas"
+            existing = source / "6162 NATAL CORRIDAS" / "6162-A.png"
+            existing.parent.mkdir(parents=True)
+            existing.write_bytes(b"existente")
+            cache = root / "indice.json"
+            duplicates_log = root / "duplicidades.txt"
+
+            with (
+                patch.object(indexer_module, "INDEX_FILE", cache),
+                patch.object(indexer_module, "DUPLICATES_LOG_FILE", duplicates_log),
+                patch.object(indexer_module, "ensure_app_dir"),
+            ):
+                build_index(source)
+
+                new_in_existing_folder = existing.parent / "6162-B.png"
+                duplicate = source / "outra" / "6162 FESTA" / "6162-A.jpg"
+                new_in_existing_folder.write_bytes(b"nova")
+                duplicate.parent.mkdir(parents=True)
+                duplicate.write_bytes(b"duplicada")
+
+                index, result = update_index_incremental(source)
+                same_index, second_result = update_index_incremental(source)
+
+            self.assertEqual(result.added_files, 2)
+            self.assertEqual(result.scanned_files, 3)
+            self.assertEqual(result.duplicates, 1)
+            self.assertEqual(
+                index[image_key("6162", "6162-B")],
+                [str(new_in_existing_folder.resolve())],
+            )
+            self.assertEqual(len(index[image_key("6162", "6162-A")]), 2)
+            self.assertEqual(second_result.added_files, 0)
+            self.assertEqual(same_index, index)
+
+    def test_incremental_index_requires_an_existing_complete_index(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "estampas"
+            source.mkdir()
+            with (
+                patch.object(indexer_module, "INDEX_FILE", root / "indice.json"),
+                patch.object(
+                    indexer_module,
+                    "DUPLICATES_LOG_FILE",
+                    root / "duplicidades.txt",
+                ),
+                patch.object(indexer_module, "ensure_app_dir"),
+            ):
+                with self.assertRaisesRegex(ValueError, "índice completo"):
+                    update_index_incremental(source)
+
     def test_variant_a_accepts_image_without_a_suffix(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

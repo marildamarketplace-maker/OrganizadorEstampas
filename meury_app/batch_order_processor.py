@@ -108,18 +108,23 @@ formato JSON interno:
   ]
 }}
 
-Use a data de emissão do pedido, não a data de impressão. Crie um item em "produtos"
-para cada linha de produto do PDF, preservando corretamente a associação entre tecido,
-estampa e variante. Quando a linha trouxer somente o número da estampa, sem letra ou
-sufixo, registre obrigatoriamente a variante como "A". Por exemplo, "6162" significa
-estampa 6162, variante A; "6162 D" significa estampa 6162, variante D. Não invente nem
-complete qualquer outro valor ausente.
+Use a data de emissão do pedido, não a data de impressão. Inclua em "produtos" somente
+linhas cuja descrição do produto contenha a palavra isolada "SUBLIME", ignorando letras
+maiúsculas ou minúsculas. Ignore completamente todas as outras linhas: não as exporte
+para o JSON e não gere erro por campos ausentes nelas. Para cada linha SUBLIME,
+preserve corretamente a associação entre tecido, estampa e variante. Quando a linha
+trouxer somente o número da estampa, sem letra ou sufixo, registre obrigatoriamente a
+variante como "A". Por exemplo, "6162" significa estampa 6162, variante A; "6162 D"
+significa estampa 6162, variante D. Não invente nem complete qualquer outro valor
+ausente.
 
-Para os campos de identificação, use "Cód. Cliente" como clienteCodigo e o valor de
-"Empresa" como clienteNome. No tecido, use o código inicial como tecidoCodigo e somente
-o nome comercial principal imediatamente após o código como tecidoNome, sem composição,
-percentuais, referência ou outros complementos. Exemplo: "1416 TRICOLINE SUBLIME
-90%POL10%ALG Ref. 6855" resulta em tecidoCodigo "1416" e tecidoNome "TRICOLINE".
+Para os campos de identificação, use "Cód. Cliente" como clienteCodigo e o valor do
+campo "Cliente" como clienteNome. Nunca use o campo "Empresa" como clienteNome, pois
+ele identifica a empresa emissora do pedido. No tecido, use o código inicial como
+tecidoCodigo e somente o nome comercial principal imediatamente após o código como
+tecidoNome, sem composição, percentuais, referência ou outros complementos. Exemplo:
+"1416 TRICOLINE SUBLIME 90%POL10%ALG Ref. 6855" resulta em tecidoCodigo "1416" e
+tecidoNome "TRICOLINE".
 
 2. Antes de executar qualquer criação, confirme que todos os campos obrigatórios foram
 extraídos com segurança:
@@ -127,9 +132,11 @@ extraídos com segurança:
 - Número do pedido
 - Data de emissão
 - Código e nome do cliente
-- Código e nome do tecido de cada produto
-- Estampa de cada produto
-- Variante de cada produto; use "A" quando o PDF não mostrar letra após a estampa
+- Pelo menos uma linha de produto contendo a palavra isolada "SUBLIME"
+- Código e nome do tecido de cada produto SUBLIME incluído
+- Estampa de cada produto SUBLIME incluído
+- Variante de cada produto SUBLIME incluído; use "A" quando o PDF não mostrar letra
+  após a estampa
 
 Se qualquer campo obrigatório estiver vazio, ilegível ou ambíguo, não execute o criador,
 não crie pastas e informe em "erros" exatamente o campo e o produto afetado. Nesse caso,

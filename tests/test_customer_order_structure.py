@@ -11,6 +11,61 @@ from meury_app.processor import process_csv_text, process_excel, process_order_p
 
 
 class CustomerOrderStructureTest(unittest.TestCase):
+    def test_variant_a_accepts_image_without_a_suffix(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "estampas" / "4233" / "4233.png"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"variante-a")
+            output = root / "saida"
+
+            results, summary = process_csv_text(
+                "pedido;26/08/2026;cliente;base;4233;A",
+                output,
+                {image_key("4233", "4233"): [str(source)]},
+            )
+
+            self.assertEqual(results[0].status, "COPIADO")
+            self.assertEqual(summary.copiados, 1)
+            self.assertTrue(
+                (output / "CLIENTE" / "26-08-2026" / "PEDIDO" / "BASE" / "4233.PNG").exists()
+            )
+
+    def test_variant_b_does_not_use_image_without_suffix(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "4233" / "4233.png"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"variante-a")
+
+            results, summary = process_csv_text(
+                "pedido;26/08/2026;cliente;base;4233;B",
+                Path(temporary) / "saida",
+                {image_key("4233", "4233"): [str(source)]},
+            )
+
+            self.assertEqual(results[0].status, "NÃO ENCONTRADO")
+            self.assertEqual(summary.nao_encontrados, 1)
+
+    def test_variant_a_reports_duplicate_when_both_name_patterns_exist(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            suffixed = root / "4233-A.png"
+            plain = root / "4233.png"
+            suffixed.write_bytes(b"com-sufixo")
+            plain.write_bytes(b"sem-sufixo")
+
+            results, summary = process_csv_text(
+                "pedido;26/08/2026;cliente;base;4233;A",
+                root / "saida",
+                {
+                    image_key("4233", "4233-A"): [str(suffixed)],
+                    image_key("4233", "4233"): [str(plain)],
+                },
+            )
+
+            self.assertEqual(results[0].status, "DUPLICADO")
+            self.assertEqual(summary.duplicados, 1)
+
     def test_processes_pdf_extraction_json_without_interface(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -119,6 +174,42 @@ class CustomerOrderStructureTest(unittest.TestCase):
             self.assertEqual(result.duplicates, 0)
             self.assertIsNone(result.duplicates_log)
             self.assertFalse(duplicates_log.exists())
+
+    def test_index_uses_initial_code_from_descriptive_design_folder(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "estampas"
+            natal = source / "6162 NATAL CORRIDAS" / "6162-A.png"
+            poa = source / "6149 POA 8CM" / "6149.png"
+            for image in (natal, poa):
+                image.parent.mkdir(parents=True)
+                image.write_bytes(b"imagem")
+
+            cache = root / "indice.json"
+            duplicates_log = root / "duplicidades.txt"
+            with (
+                patch.object(indexer_module, "INDEX_FILE", cache),
+                patch.object(indexer_module, "DUPLICATES_LOG_FILE", duplicates_log),
+                patch.object(indexer_module, "ensure_app_dir"),
+            ):
+                index, _ = build_index(source)
+
+            self.assertEqual(
+                index[image_key("6162", "6162-A")],
+                [str(natal.resolve())],
+            )
+            self.assertEqual(
+                index[image_key("6149", "6149")],
+                [str(poa.resolve())],
+            )
+
+            results, summary = process_csv_text(
+                "pedido;26/08/2026;cliente;base;6149;A",
+                root / "saida",
+                index,
+            )
+            self.assertEqual(results[0].status, "COPIADO")
+            self.assertEqual(summary.copiados, 1)
 
     def test_processes_csv_text_without_header_in_excel_column_order(self):
         with tempfile.TemporaryDirectory() as temporary:

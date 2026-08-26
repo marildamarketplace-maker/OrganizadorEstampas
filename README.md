@@ -33,7 +33,7 @@ subpastas forem necessárias:
 ```text
 Estampas/
 ├── MV/
-│   ├── 6652/
+│   ├── 6652 NATAL CORRIDAS/
 │   │   ├── 6652-A.jpg
 │   │   └── 6652-B.jpg
 │   └── 7001/
@@ -45,10 +45,12 @@ Estampas/
         └── 7001-X.jpg
 ```
 
-Cada imagem deve estar na pasta da estampa. O caminho deve terminar em:
+Cada imagem deve estar na pasta da estampa. A pasta pode conter uma descrição
+depois do código; por exemplo, `6162 NATAL CORRIDAS` é identificada como estampa
+`6162`. O caminho deve terminar em:
 
 ```text
-ID_DA_ESTAMPA/ID_DA_ESTAMPA-VARIANTE.extensão
+ID_DA_ESTAMPA [DESCRIÇÃO]/ID_DA_ESTAMPA-VARIANTE.extensão
 ```
 
 Podem existir quantas pastas intermediárias forem necessárias antes da pasta da
@@ -63,6 +65,7 @@ MV27164-W.pdf
 ```
 
 A comparação ignora letras maiúsculas e minúsculas, mas exige o nome completo correto.
+Para a variante A, também é aceito um arquivo sem o sufixo `-A`, como `6652.png`.
 Somente arquivos nos formatos `.JPG`, `.PNG` e `.PDF` são incluídos no índice.
 Os IDs de pedido, cliente, estampa e variante são convertidos automaticamente para
 maiúsculas. As pastas e os nomes dos arquivos copiados também saem em maiúsculas.

@@ -67,6 +67,15 @@ def clean_identifier(value) -> str:
     return clean_cell(value).upper()
 
 
+def image_search_names(estampa: str, variante: str) -> list[str]:
+    """Retorna os nomes aceitos para uma estampa e sua variante."""
+    names = [f"{estampa}-{variante}".strip("-")]
+    # A variante A também pode ser armazenada sem o sufixo "-A".
+    if variante == "A":
+        names.append(estampa)
+    return names
+
+
 def clean_order_date(value) -> tuple[str, str]:
     """Retorna a data para o relatório e uma versão segura para a pasta."""
     if isinstance(value, (datetime, date)):
@@ -174,7 +183,8 @@ def process_excel(
         cliente = clean_identifier(row[columns["cliente"]] if "cliente" in columns and columns["cliente"] < len(row) else "")
         base = clean_identifier(row[columns["base"]] if columns["base"] < len(row) else "")
 
-        searched_name = f"{estampa}-{variante}".strip("-")
+        searched_names = image_search_names(estampa, variante)
+        searched_name = " ou ".join(searched_names)
         item = ProcessingItem(
             linha=position,
             pedido=pedido,
@@ -194,8 +204,11 @@ def process_excel(
             results.append(item)
             continue
 
-        key = image_key(estampa, searched_name)
-        matches = index.get(key, [])
+        matches = [
+            match
+            for candidate in searched_names
+            for match in index.get(image_key(estampa, candidate), [])
+        ]
 
         if not matches:
             item.status = "NÃO ENCONTRADO"

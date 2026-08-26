@@ -14,7 +14,7 @@ from .config import (
 )
 
 
-INDEX_VERSION = 5
+INDEX_VERSION = 6
 
 
 @dataclass
@@ -34,6 +34,11 @@ def normalize_key(value: str) -> str:
 def image_key(estampa: str, arquivo: str) -> str:
     """Cria a chave da estrutura Estampa/arquivo."""
     return "\u0000".join(normalize_key(part) for part in (estampa, arquivo))
+
+
+def design_id_from_folder(folder_name: str) -> str:
+    """Extrai o código inicial de uma pasta de estampa com descrição opcional."""
+    return folder_name.strip().split(maxsplit=1)[0]
 
 
 def normalize_source_dirs(source_dirs: Path | list[Path]) -> list[Path]:
@@ -83,7 +88,7 @@ def build_index(
             if len(relative.parts) < 2:
                 continue
 
-            estampa = relative.parts[-2]
+            estampa = design_id_from_folder(relative.parts[-2])
             key = image_key(estampa, path.stem)
             index.setdefault(key, []).append(str(path.resolve()))
 

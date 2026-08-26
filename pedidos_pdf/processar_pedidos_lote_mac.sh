@@ -37,3 +37,4 @@ echo "Iniciando processamento dos PDFs novos..."
 "$PYTHON_BIN" "$RAIZ_PROJETO/meury_app/batch_order_processor.py" \
   --projeto "$RAIZ_PROJETO" \
   --codex "$CODEX_BIN"
+

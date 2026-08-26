@@ -8,6 +8,7 @@ import hashlib
 import json
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
@@ -109,8 +110,16 @@ formato JSON interno:
 
 Use a data de emissão do pedido, não a data de impressão. Crie um item em "produtos"
 para cada linha de produto do PDF, preservando corretamente a associação entre tecido,
-estampa e variante. Não presuma que uma variante vazia significa "A" nem invente ou
+estampa e variante. Quando a linha trouxer somente o número da estampa, sem letra ou
+sufixo, registre obrigatoriamente a variante como "A". Por exemplo, "6162" significa
+estampa 6162, variante A; "6162 D" significa estampa 6162, variante D. Não invente nem
 complete qualquer outro valor ausente.
+
+Para os campos de identificação, use "Cód. Cliente" como clienteCodigo e o valor de
+"Empresa" como clienteNome. No tecido, use o código inicial como tecidoCodigo e somente
+o nome comercial principal imediatamente após o código como tecidoNome, sem composição,
+percentuais, referência ou outros complementos. Exemplo: "1416 TRICOLINE SUBLIME
+90%POL10%ALG Ref. 6855" resulta em tecidoCodigo "1416" e tecidoNome "TRICOLINE".
 
 2. Antes de executar qualquer criação, confirme que todos os campos obrigatórios foram
 extraídos com segurança:
@@ -120,7 +129,7 @@ extraídos com segurança:
 - Código e nome do cliente
 - Código e nome do tecido de cada produto
 - Estampa de cada produto
-- Variante de cada produto
+- Variante de cada produto; use "A" quando o PDF não mostrar letra após a estampa
 
 Se qualquer campo obrigatório estiver vazio, ilegível ou ambíguo, não execute o criador,
 não crie pastas e informe em "erros" exatamente o campo e o produto afetado. Nesse caso,
@@ -130,10 +139,10 @@ o resultado final deve ser FALHA.
 
 {project / 'criar_pedido.py'}
 
-Entregue o JSON ao programa e use explicitamente estas opções:
-
---origem {project / 'estampas'}
---saida {project / 'pedidos'}
+Entregue o JSON ao programa sem informar as opções --origem e --saida. O criador deve
+carregar automaticamente as pastas de origem e a pasta de saída já salvas pelo aplicativo
+em ~/.meury_organizador_estampas/config.json. Não substitua essas configurações por pastas
+dentro do projeto.
 
 Não apenas apresente ou simule o JSON. Aguarde o término do programa e confira a resposta
 real, as pastas criadas e os arquivos copiados. Não altere código-fonte, configurações ou
@@ -178,24 +187,39 @@ def run_codex(
     final_path: Path,
     log_path: Path,
 ) -> Dict[str, Any]:
+    config_path = Path.home() / ".meury_organizador_estampas" / "config.json"
+    configured_output = ""
+    if config_path.exists():
+        try:
+            configured_output = str(
+                json.loads(config_path.read_text(encoding="utf-8")).get("output_dir", "")
+            ).strip()
+        except (json.JSONDecodeError, OSError, TypeError):
+            configured_output = ""
+
     command = [
         str(codex),
         "exec",
         "--cd",
         str(project),
         "--sandbox",
-        "workspace-write",
-        "--approve-for-me",
+        "danger-full-access",
+    ]
+    if configured_output:
+        command.extend(["--add-dir", configured_output])
+    command.extend([
         "--output-schema",
         str(schema_path),
         "--output-last-message",
         str(final_path),
         "-",
-    ]
+    ])
     completed = subprocess.run(
         command,
         input=build_prompt(project, pdf_path),
         text=True,
+        encoding="utf-8",
+        errors="replace",
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         check=False,
@@ -208,6 +232,9 @@ def run_codex(
         message = f"Codex terminou com código {completed.returncode}."
         if not result:
             message += " A resposta final não continha um relatório JSON válido."
+        command_output = (completed.stdout or "").strip()
+        if command_output:
+            message += f" Detalhes do Codex: {command_output[-1500:]}"
         return {
             "pedido": "",
             "pastaCriada": "",
@@ -231,7 +258,30 @@ def write_csv(path: Path, rows: Iterable[Dict[str, Any]]) -> None:
             writer.writerow({field: row.get(field, "") for field in fields})
 
 
+def print_result_details(result: Dict[str, Any]) -> None:
+    """Mostra no terminal o mesmo resultado relevante salvo no relatório JSON."""
+    print(f"  Pedido: {result.get('pedido') or '(não identificado)'}")
+    print(f"  Resultado: {result.get('resultadoFinal', 'FALHA')}")
+    print(f"  Pasta criada: {result.get('pastaCriada') or '(nenhuma)'}")
+    print(f"  Quantidade copiada: {result.get('quantidadeCopiada', 0)}")
+
+    categories = (
+        ("Copiadas", "copiadas"),
+        ("Não encontradas", "naoEncontradas"),
+        ("Duplicadas", "duplicadas"),
+        ("Já existentes", "jaExistentes"),
+        ("Erros", "erros"),
+    )
+    for label, key in categories:
+        values = result.get(key) or []
+        if values:
+            print(f"  {label}:")
+            for value in values:
+                print(f"    - {value}")
+
+
 def main() -> int:
+    started_at = time.monotonic()
     args = parse_args()
     project = Path(args.projeto).resolve()
     codex = Path(args.codex).resolve()
@@ -263,7 +313,8 @@ def main() -> int:
 
     for position, pdf_path in enumerate(pdfs, start=1):
         digest = file_hash(pdf_path)
-        print(f"[{position}/{len(pdfs)}] {pdf_path.name}")
+        print("")
+        print(f"[{position}/{len(pdfs)}] Processando: {pdf_path.name}", flush=True)
         if digest in successful_records:
             previous = successful_records[digest]
             skipped_rows.append(
@@ -279,12 +330,14 @@ def main() -> int:
                     ),
                 }
             )
-            print("  Já processado; ignorado.")
+            print("  Resultado: JÁ PROCESSADO")
+            print(f"  Pedido: {previous.get('pedido') or '(não identificado)'}")
             continue
 
         report_base = f"{position:03d}_{safe_report_name(pdf_path)}"
         final_path = run_dir / f"{report_base}.json"
         log_path = run_dir / f"{report_base}.log"
+        print("  Aguardando análise do Codex...", flush=True)
         try:
             result = run_codex(codex, project, pdf_path, schema_path, final_path, log_path)
         except OSError as exc:
@@ -325,14 +378,14 @@ def main() -> int:
             }
         )
         append_history(history_path, history_record)
+        print_result_details(result)
 
         if outcome in FINAL_SUCCESS:
             success_rows.append(row)
             successful_records[digest] = history_record
-            print(f"  {outcome}")
         else:
             failure_rows.append(row)
-            print("  FALHA; será tentado novamente no próximo lote.")
+            print("  Este PDF será tentado novamente no próximo lote.")
 
     write_csv(run_dir / "sucessos.csv", success_rows)
     write_csv(run_dir / "falhas.csv", failure_rows)
@@ -351,6 +404,9 @@ def main() -> int:
     print(f"Sucessos: {len(success_rows)}")
     print(f"Falhas: {len(failure_rows)}")
     print(f"Já processados: {len(skipped_rows)}")
+    elapsed = round(time.monotonic() - started_at)
+    minutes, seconds = divmod(elapsed, 60)
+    print(f"Tempo total: {minutes} min {seconds:02d} s")
     print(f"Relatórios: {run_dir}")
     return 1 if failure_rows else 0
 

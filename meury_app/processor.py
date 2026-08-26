@@ -167,6 +167,7 @@ def process_excel(
 
     columns = discover_columns(headers)
     raw_rows = list(rows)
+    workbook.close()
     total = len(raw_rows)
     results: list[ProcessingItem] = []
     pedidos = set()
@@ -176,7 +177,9 @@ def process_excel(
     for position, row in enumerate(raw_rows, start=2):
         pedido = clean_identifier(row[columns["pedido"]] if columns["pedido"] < len(row) else "")
         estampa = clean_identifier(row[columns["estampa"]] if columns["estampa"] < len(row) else "")
-        variante = clean_identifier(row[columns["variante"]] if columns["variante"] < len(row) else "")
+        variante = clean_identifier(
+            row[columns["variante"]] if columns["variante"] < len(row) else ""
+        ) or "A"
         data, data_folder = clean_order_date(
             row[columns["data"]] if columns["data"] < len(row) else ""
         )
@@ -197,9 +200,9 @@ def process_excel(
             status="",
         )
 
-        if not pedido or not data or not cliente or not base or not estampa or not variante:
+        if not pedido or not data or not cliente or not base or not estampa:
             item.status = "IGNORADO"
-            item.observacao = "Pedido, data, cliente, base, estampa ou variante em branco."
+            item.observacao = "Pedido, data, cliente, base ou estampa em branco."
             ignored += 1
             results.append(item)
             continue
@@ -324,6 +327,7 @@ def process_csv_text(
         temporary_path = Path(temporary.name)
     try:
         workbook.save(temporary_path)
+        workbook.close()
         return process_excel(
             temporary_path,
             output_dir,
@@ -357,7 +361,7 @@ def process_order_payload(
 
     rows = []
     base_folders: set[str] = set()
-    product_fields = ("tecidoCodigo", "tecidoNome", "estampa", "variante")
+    product_fields = ("tecidoCodigo", "tecidoNome", "estampa")
     for position, product in enumerate(products, start=1):
         if not isinstance(product, dict):
             raise ValueError(f"O produto {position} deve ser um objeto JSON.")
@@ -379,7 +383,7 @@ def process_order_payload(
             customer_folder,
             product_folder,
             product["estampa"],
-            product["variante"],
+            clean_identifier(product.get("variante", "")) or "A",
         ])
         base_folders.add(product_folder)
 

@@ -11,6 +11,36 @@ from meury_app.processor import process_csv_text, process_excel, process_order_p
 
 
 class CustomerOrderStructureTest(unittest.TestCase):
+    def test_treats_missing_variant_suffix_as_a(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "estampas" / "6162" / "6162-A.jpg"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"imagem")
+            output = root / "saida"
+            payload = {
+                "pedido": "85951917582",
+                "data": "05-08-2026",
+                "clienteCodigo": "1710",
+                "clienteNome": "CENTRAL ARACATUBA DE MALHAS LTDA ME",
+                "produtos": [{
+                    "tecidoCodigo": "1416",
+                    "tecidoNome": "TRICOLINE SUBLIME",
+                    "estampa": "6162",
+                    "variante": "",
+                }],
+            }
+
+            results, summary = process_order_payload(
+                payload,
+                output,
+                {image_key("6162", "6162-A"): [str(source)]},
+            )
+
+            self.assertEqual(summary.copiados, 1)
+            self.assertEqual(results[0].variante, "A")
+            self.assertEqual(results[0].arquivo_procurado, "6162-A")
+
     def test_processes_pdf_extraction_json_without_interface(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

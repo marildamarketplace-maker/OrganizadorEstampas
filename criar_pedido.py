@@ -69,9 +69,22 @@ def main() -> int:
             / safe_folder_name(results[0].pedido)
         ) if results else "",
         "copiados": summary.copiados,
+        "arquivosCopiados": [
+            item.arquivo_procurado for item in results if item.status == "COPIADO"
+        ],
         "naoEncontrados": summary.nao_encontrados,
+        "estampasNaoEncontradas": [
+            item.arquivo_procurado for item in results if item.status == "NÃO ENCONTRADO"
+        ],
         "duplicados": summary.duplicados,
+        "estampasDuplicadas": [
+            item.arquivo_procurado for item in results if item.status == "DUPLICADO"
+        ],
         "jaExistentesOuIgnorados": summary.ignorados,
+        "arquivosJaExistentes": [
+            item.arquivo_procurado for item in results if item.status == "JÁ EXISTE"
+        ],
+        "erros": [],
         "relatorio": summary.report_xlsx,
     }
     print(json.dumps(response, ensure_ascii=False, indent=2))

@@ -19,7 +19,7 @@ class App:
         self.root = tk.Tk()
         self.root.title(APP_NAME)
         self.root.geometry("960x840")
-        self.root.minsize(840, 720)
+        self.root.minsize(640, 480)
 
         self.config = load_config()
         self.index = {}
@@ -74,13 +74,60 @@ class App:
 
         notebook = ttk.Notebook(main)
         notebook.pack(fill="both", expand=True)
-        organizer_page = ttk.Frame(notebook, padding=18)
-        collector_page = ttk.Frame(notebook, padding=18)
-        notebook.add(organizer_page, text="Organizar pedidos")
-        notebook.add(collector_page, text="Copiar imagens")
+        organizer_tab, organizer_page, organizer_canvas = self._scrollable_page(notebook)
+        collector_tab, collector_page, collector_canvas = self._scrollable_page(notebook)
+        notebook.add(organizer_tab, text="Organizar pedidos")
+        notebook.add(collector_tab, text="Copiar imagens")
+
+        tab_canvases = {
+            str(organizer_tab): organizer_canvas,
+            str(collector_tab): collector_canvas,
+        }
+
+        def scroll_current_page(event):
+            if isinstance(event.widget, (tk.Text, tk.Listbox)):
+                return
+            canvas = tab_canvases.get(notebook.select())
+            if canvas is None:
+                return
+            if getattr(event, "num", None) == 4:
+                amount = -1
+            elif getattr(event, "num", None) == 5:
+                amount = 1
+            else:
+                amount = -1 if event.delta > 0 else 1 if event.delta < 0 else 0
+            canvas.yview_scroll(amount, "units")
+
+        self.root.bind_all("<MouseWheel>", scroll_current_page, add="+")
+        self.root.bind_all("<Button-4>", scroll_current_page, add="+")
+        self.root.bind_all("<Button-5>", scroll_current_page, add="+")
 
         self._build_organizer_tab(organizer_page)
         self._build_collector_tab(collector_page)
+
+    def _scrollable_page(self, parent):
+        container = ttk.Frame(parent)
+        canvas = tk.Canvas(container, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(
+            container, orient="vertical", command=canvas.yview
+        )
+        page = ttk.Frame(canvas, padding=18)
+        page_window = canvas.create_window((0, 0), window=page, anchor="nw")
+
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        page.bind(
+            "<Configure>",
+            lambda _event: canvas.configure(scrollregion=canvas.bbox("all")),
+        )
+        canvas.bind(
+            "<Configure>",
+            lambda event: canvas.itemconfigure(page_window, width=event.width),
+        )
+
+        return container, page, canvas
 
     def _build_organizer_tab(self, main):
         ttk.Label(main, text="Organizador de Estampas", style="Title.TLabel").pack(anchor="w")

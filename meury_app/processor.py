@@ -76,6 +76,30 @@ def image_search_names(estampa: str, variante: str) -> list[str]:
     return names
 
 
+def exclusive_image_matches(
+    index: dict[str, list[str]], searched_names: list[str]
+) -> list[str]:
+    """Busca arquivos exclusivos cujo código está no nome, não na pasta pai."""
+    normalized_names = [name.casefold() for name in searched_names]
+    matches: list[str] = []
+    seen: set[str] = set()
+    for key, paths in index.items():
+        indexed_name = key.split("\0", maxsplit=1)[-1].casefold()
+        if not any(
+            indexed_name == name
+            or indexed_name.startswith(name + " ")
+            or indexed_name.startswith(name + ".")
+            for name in normalized_names
+        ):
+            continue
+        for path in paths:
+            normalized_path = str(path).casefold()
+            if normalized_path not in seen:
+                seen.add(normalized_path)
+                matches.append(str(path))
+    return matches
+
+
 def clean_order_date(value) -> tuple[str, str]:
     """Retorna a data para o relatório e uma versão segura para a pasta."""
     if isinstance(value, (datetime, date)):
@@ -171,6 +195,7 @@ def process_excel(
     total = len(raw_rows)
     results: list[ProcessingItem] = []
     pedidos = set()
+    report_order_folders: set[Path] = set()
 
     copied = missing = duplicates = ignored = 0
 
@@ -207,11 +232,22 @@ def process_excel(
             results.append(item)
             continue
 
+        report_order_folders.add(
+            output_dir
+            / safe_folder_name(cliente)
+            / data_folder
+            / safe_folder_name(pedido)
+        )
+
         matches = [
             match
             for candidate in searched_names
             for match in index.get(image_key(estampa, candidate), [])
         ]
+        exclusive_matches = False
+        if not matches:
+            matches = exclusive_image_matches(index, searched_names)
+            exclusive_matches = bool(matches)
 
         if not matches:
             item.status = "NÃO ENCONTRADO"
@@ -219,13 +255,12 @@ def process_excel(
                 f"Nenhuma imagem para '{estampa}/{searched_name}'."
             )
             missing += 1
-        elif len(matches) > 1:
+        elif len(matches) > 1 and not exclusive_matches:
             item.status = "DUPLICADO"
             item.origem = " | ".join(matches)
             item.observacao = "Há mais de um arquivo com o mesmo nome. Nada foi copiado."
             duplicates += 1
         else:
-            source = Path(matches[0])
             order_folder = (
                 output_dir
                 / safe_folder_name(cliente)
@@ -234,19 +269,32 @@ def process_excel(
                 / safe_folder_name(base)
             )
             order_folder.mkdir(parents=True, exist_ok=True)
-            item.origem = str(source)
-            destination = order_folder / source.name.upper()
-            item.destino = str(destination)
+            destinations: list[str] = []
+            copied_for_item = 0
+            existing_for_item = 0
+            for match in matches:
+                source = Path(match)
+                destination = order_folder / source.name.upper()
+                destinations.append(str(destination))
+                if destination.exists():
+                    existing_for_item += 1
+                else:
+                    shutil.copy2(source, destination)
+                    copied_for_item += 1
 
-            if destination.exists():
-                item.status = "JÁ EXISTE"
-                item.observacao = "O arquivo já existe no pedido e não foi copiado novamente."
-                ignored += 1
-            else:
-                shutil.copy2(source, destination)
+            item.origem = " | ".join(matches)
+            item.destino = " | ".join(destinations)
+            copied += copied_for_item
+            ignored += existing_for_item
+            if copied_for_item:
                 item.status = "COPIADO"
-                copied += 1
+                item.observacao = f"{copied_for_item} arquivo(s) copiado(s)."
+                if existing_for_item:
+                    item.observacao += f" {existing_for_item} já existente(s)."
                 pedidos.add((cliente, data_folder, pedido))
+            else:
+                item.status = "JÁ EXISTE"
+                item.observacao = "Todos os arquivos já existem no pedido."
 
         results.append(item)
 
@@ -255,8 +303,14 @@ def process_excel(
             progress_callback(current, total, f"Processando linha {current} de {total}")
 
     timestamp = time.strftime("%Y%m%d_%H%M%S")
-    report_xlsx = output_dir / f"relatorio_processamento_{timestamp}.xlsx"
-    report_csv = output_dir / f"relatorio_processamento_{timestamp}.csv"
+    report_dir = (
+        next(iter(report_order_folders))
+        if len(report_order_folders) == 1
+        else output_dir
+    )
+    report_dir.mkdir(parents=True, exist_ok=True)
+    report_xlsx = report_dir / f"relatorio_processamento_{timestamp}.xlsx"
+    report_csv = report_dir / f"relatorio_processamento_{timestamp}.csv"
     write_reports(results, report_xlsx, report_csv)
 
     summary = ProcessingSummary(

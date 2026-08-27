@@ -16,6 +16,45 @@ from meury_app.processor import process_csv_text, process_excel, process_order_p
 
 
 class CustomerOrderStructureTest(unittest.TestCase):
+    def test_copies_all_exclusive_images_found_by_filename_prefix(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source_dir = root / "MATEUS CALL" / "MATEUS FELIPE DE SOUZA"
+            source_dir.mkdir(parents=True)
+            first = source_dir / "MV23069 47x94.jpg"
+            second = source_dir / "MV23069 47x94..jpg"
+            first.write_bytes(b"imagem 1")
+            second.write_bytes(b"imagem 2")
+            output = root / "saida"
+            payload = {
+                "pedido": "20003945",
+                "data": "25-08-2026",
+                "clienteCodigo": "5211",
+                "clienteNome": "MAGA WOMAN LTDA",
+                "produtos": [{
+                    "tecidoCodigo": "9109",
+                    "tecidoNome": "SEDA MICHELANGELO",
+                    "estampa": "MV23069",
+                    "variante": "A",
+                }],
+            }
+            index = {
+                image_key("MATEUS", "MV23069 47x94"): [str(first)],
+                image_key("MATEUS", "MV23069 47x94."): [str(second)],
+            }
+
+            results, summary = process_order_payload(payload, output, index)
+
+            self.assertEqual(summary.copiados, 2)
+            self.assertEqual(results[0].status, "COPIADO")
+            destination = (
+                output / "5211-MAGA-WOMAN-LTDA" / "25-08-2026"
+                / "20003945" / "9109-SEDA-MICHELANGELO"
+            )
+            self.assertTrue((destination / "MV23069 47X94.JPG").exists())
+            self.assertTrue((destination / "MV23069 47X94..JPG").exists())
+            self.assertEqual(Path(summary.report_xlsx).parent, destination.parent)
+
     def test_incremental_index_adds_new_images_without_repeating_existing_ones(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

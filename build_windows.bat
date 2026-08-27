@@ -1,12 +1,38 @@
 @echo off
 setlocal
+cd /d "%~dp0"
+
+set "VENV_PY=.venv\Scripts\python.exe"
 if not exist .venv (
-    py -m venv .venv
+    where py >nul 2>nul
+    if not errorlevel 1 (
+        py -3 -m venv .venv
+    ) else (
+        python -m venv .venv
+    )
 )
-call .venv\Scripts\activate
-py -m pip install --upgrade pip
-pip install -r requirements.txt
-pyinstaller --noconfirm --clean --windowed --name "OrganizadorEstampasMeury" app.py
+if not exist "%VENV_PY%" (
+    echo ERRO: nao foi possivel criar o ambiente Python.
+    pause
+    exit /b 1
+)
+
+"%VENV_PY%" -m pip install --upgrade pip
+if errorlevel 1 goto :erro
+"%VENV_PY%" -m pip install -r requirements.txt
+if errorlevel 1 goto :erro
+"%VENV_PY%" -m PyInstaller --noconfirm --clean --windowed ^
+    --collect-all faiss ^
+    --collect-all openai ^
+    --name "OrganizadorEstampasMeury" app.py
+if errorlevel 1 goto :erro
 echo.
 echo Aplicativo criado em dist\OrganizadorEstampasMeury
 pause
+exit /b 0
+
+:erro
+echo.
+echo ERRO: nao foi possivel criar o aplicativo.
+pause
+exit /b 1

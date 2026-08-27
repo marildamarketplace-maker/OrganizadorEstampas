@@ -1,5 +1,16 @@
 # Organizador de Estampas — Meury Shop
 
+## Inicialização e recursos opcionais
+
+Use `executar_windows.bat` no Windows ou `executar_macos.command` no macOS. Os
+inicializadores trabalham sempre na pasta do projeto, criam a `.venv` quando
+necessário e instalam novamente as dependências básicas somente quando
+`requirements.txt` mudar ou algum pacote estiver ausente.
+
+A análise de imagens, a busca semântica e a busca de semelhantes usam a API OpenAI.
+O aplicativo instala apenas bibliotecas leves e o índice FAISS local; não baixa
+modelos visuais grandes. A chave da API é solicitada quando um desses recursos é usado.
+
 Aplicativo para Windows e macOS que:
 
 1. Lê uma planilha Excel.
@@ -24,6 +35,84 @@ Saída:   saida/7751/7751-A.png
 
 Arquivos que já existirem no destino não são sobrescritos. Eles são ignorados e
 listados no log da aba ao final do processamento.
+
+## Pesquisar artes
+
+A aba **Pesquisar Artes** consulta nome, caminho, descrição, palavras-chave, cores,
+elementos, temas e categoria. A busca ignora acentos e aceita aproximações simples,
+como `flor`, `floral` e `flores`, sem exigir correspondência literal completa.
+
+Os 200 resultados mais relevantes são exibidos em uma grade. As miniaturas são
+criadas sob demanda em `~/.meury_organizador_estampas/thumbnails` e reutilizadas
+enquanto o arquivo original não mudar. Assim, a busca não mantém as imagens originais
+em memória. Clique em uma arte para ampliar, consultar os metadados, abrir o arquivo
+ou pasta, copiar caminho/nome e editar manualmente suas palavras-chave.
+
+### Busca semântica
+
+A busca semântica complementa o ranking textual. Ela envia somente a descrição e os
+metadados da arte para o modelo `text-embedding-3-small`, em lotes, e grava os vetores
+de 384 dimensões em um índice FAISS no computador. As imagens do catálogo não são
+enviadas durante a criação desse índice.
+
+Na aba **Pesquisar Artes**:
+
+1. Clique em **Atualizar índice semântico** para gerar somente vetores ausentes ou
+   cujos metadados mudaram.
+2. Marque **Busca semântica** para combinar o ranking conceitual com a busca textual.
+3. Use **Reconstruir índice semântico** somente quando quiser recalcular tudo.
+
+Os arquivos ficam em `~/.meury_organizador_estampas/indice_semantico.faiss` e
+`indice_semantico.jsonl`. O JSONL associa cada ID vetorial à origem e ao caminho
+relativo da imagem. Movimentos e renomeações reutilizam o embedding quando o conteúdo
+semântico continua igual. Imagens ainda sem descrição ou metadados de análise não são
+incluídas até receberem conteúdo pesquisável.
+
+### Encontrar imagens semelhantes por conteúdo
+
+Para uma imagem externa, o aplicativo envia somente essa imagem ao GPT para obter
+descrição, cores, elementos, temas e categoria. Depois pesquisa esses dados no mesmo
+índice semântico do catálogo. Para uma arte já catalogada, reutiliza seus metadados.
+Os vetores e seu mapeamento persistem em:
+
+```text
+~/.meury_organizador_estampas/indice_semantico.faiss
+~/.meury_organizador_estampas/indice_semantico.jsonl
+```
+
+Para pesquisar, clique em **Encontrar imagens semelhantes** e escolha um JPG, JPEG ou
+PNG, ou clique com o botão direito sobre uma miniatura e selecione **Encontrar
+semelhantes**. Os resultados aparecem na mesma grade, em ordem decrescente, com o
+percentual de similaridade. A própria arte selecionada é omitida dos resultados.
+
+Essa busca compara o significado e os elementos identificados, não os pixels. Por
+isso, encontra artes com tema e composição parecidos, mas não é um detector exato de
+arquivos duplicados.
+
+### Escala, cache e diagnóstico
+
+O aplicativo foi preparado para catálogos da ordem de 195 mil imagens:
+
+- a inicialização valida apenas o cabeçalho do JSONL; o catálogo completo é carregado
+  sob demanda e sempre fora da thread da interface;
+- a atualização incremental percorre o HD em fluxo e reutiliza os registros antigos,
+  evitando manter dois catálogos completos independentes em RAM;
+- IA e embeddings trabalham em lotes, nunca com o acervo inteiro de imagens aberto;
+- imagens enviadas para análise são reduzidas antes da chamada à API;
+- miniaturas são persistentes e invalidadas automaticamente quando o arquivo muda;
+- JSONL e índices FAISS são substituídos atomicamente, reduzindo o risco de índice
+  corrompido após uma interrupção.
+
+A área **Estatísticas do catálogo** é atualizada em segundo plano e informa total de
+imagens, presença/ausência de palavras-chave, embeddings semânticos, pendências e
+erros. O contador de embeddings lê apenas o mapeamento JSONL e não carrega o FAISS ou
+o modelo na memória.
+
+Os índices FAISS atuais usam busca exata (`IndexFlatIP`), adequada para máxima
+qualidade e pesquisa rápida nessa escala. Como referência, 195 mil vetores semânticos
+de 384 dimensões ocupam cerca de 286 MiB, além dos metadados. Eles são carregados
+somente quando a funcionalidade é usada. Se o acervo crescer muito além disso ou a RAM disponível for limitada, a troca
+para HNSW/IVF pode ser feita sem mudar o catálogo JSONL.
 
 ## Estrutura esperada das estampas
 
@@ -66,7 +155,7 @@ MV27164-W.pdf
 
 A comparação ignora letras maiúsculas e minúsculas, mas exige o nome completo correto.
 Para a variante A, também é aceito um arquivo sem o sufixo `-A`, como `6652.png`.
-Somente arquivos nos formatos `.JPG`, `.PNG` e `.PDF` são incluídos no índice.
+Somente arquivos nos formatos `.JPG`, `.JPEG`, `.PNG` e `.PDF` são incluídos no índice.
 Os IDs de pedido, cliente, estampa e variante são convertidos automaticamente para
 maiúsculas. As pastas e os nomes dos arquivos copiados também saem em maiúsculas.
 
@@ -144,6 +233,28 @@ Qualquer pendência é classificada como falha. Falhas ficam no histórico e sã
 novamente na execução seguinte.
 
 ## Instalação para testar com Python
+
+## Análise de uma imagem com IA
+
+A análise usa a API OpenAI e nunca inicia um lote sem confirmação. Defina a variável
+`OPENAI_API_KEY` para usar o utilitário de linha de comando; na interface, a chave é
+solicitada quando necessário e mantida apenas durante a execução do aplicativo.
+
+Teste uma única imagem:
+
+```bash
+python analisar_imagem.py "/caminho/para/12345.jpg"
+```
+
+O resultado é exibido como JSON com descrição, palavras-chave, cores, elementos,
+temas e categoria, sempre sem iniciar a análise das demais imagens.
+
+Na interface, o botão **Gerar Palavras-chave com IA** permite escolher todas as
+imagens pendentes ou um lote de teste com 1, 10, 50 ou 100 imagens. Cada
+resultado é salvo imediatamente em `resultados_analise_ia.jsonl`; fechar o aplicativo
+ou reiniciar o computador não descarta as imagens já concluídas. Ao iniciar novamente,
+somente as pendentes são oferecidas. O arquivo `analise_ia.log` registra sucessos,
+erros e resumos. Pausar ou cancelar aguarda a imagem atual terminar e ser salva.
 
 ### Windows
 
@@ -224,8 +335,8 @@ Ajustes do Sistema > Privacidade e Segurança > Abrir Mesmo Assim
    Use `Remover selecionada` para retirar uma pasta da lista.
 3. Escolha a pasta de saída.
 4. Na primeira vez, clique em `Atualizar índice completo`. Depois, use `Adicionar
-   imagens novas` para atualizações rápidas. Use novamente a atualização completa
-   quando excluir ou renomear imagens.
+   imagens novas` para atualizações incrementais. O catálogo também identifica
+   arquivos alterados, removidos, movidos ou renomeados.
 5. Após concluir, clique em `GERAR PASTAS DOS PEDIDOS`.
 6. Confira o relatório criado na pasta de saída.
 

@@ -1,0 +1,5 @@
+# Compatibilidade com instalações antigas. A busca usa embeddings da API OpenAI
+# e mantém o índice vetorial localmente.
+openai>=2.0,<3
+faiss-cpu>=1.12,<2
+numpy>=1.26,<3

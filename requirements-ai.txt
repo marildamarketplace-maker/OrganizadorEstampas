@@ -1,0 +1,8 @@
+# Dependências opcionais. O aplicativo e a indexação continuam funcionando sem elas.
+Pillow>=10.4,<13
+torch>=2.4,<3
+torchvision>=0.19,<1
+transformers>=4.49,<6
+accelerate>=1.0,<2
+qwen-vl-utils>=0.0.8,<1
+num2words>=0.5,<1

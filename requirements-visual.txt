@@ -1,0 +1,6 @@
+# Embeddings visuais locais e opcionais.
+Pillow>=10.4,<13
+torch>=2.4,<3
+transformers>=4.49,<6
+faiss-cpu>=1.12,<2
+numpy>=1.26,<3

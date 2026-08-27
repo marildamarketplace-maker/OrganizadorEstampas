@@ -4,12 +4,19 @@ import json
 APP_NAME = "Organizador de Estampas - Meury Shop"
 APP_DIR = Path.home() / ".meury_organizador_estampas"
 CONFIG_FILE = APP_DIR / "config.json"
-INDEX_FILE = APP_DIR / "indice_estampas.json"
+INDEX_FILE = APP_DIR / "indice_estampas.jsonl"
+LEGACY_INDEX_FILE = APP_DIR / "indice_estampas.json"
 DUPLICATES_LOG_FILE = APP_DIR / "duplicidades_indice.txt"
+ANALYSIS_RESULTS_FILE = APP_DIR / "resultados_analise_ia.jsonl"
+ANALYSIS_LOG_FILE = APP_DIR / "analise_ia.log"
+SEMANTIC_INDEX_FILE = APP_DIR / "indice_semantico.faiss"
+SEMANTIC_METADATA_FILE = APP_DIR / "indice_semantico.jsonl"
+SEMANTIC_LOG_FILE = APP_DIR / "indice_semantico.log"
+VISUAL_INDEX_FILE = APP_DIR / "indice_visual.faiss"
+VISUAL_METADATA_FILE = APP_DIR / "indice_visual.jsonl"
+VISUAL_LOG_FILE = APP_DIR / "indice_visual.log"
 
-SUPPORTED_EXTENSIONS = {
-    ".jpg", ".png", ".pdf"
-}
+SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".pdf"}
 
 DEFAULT_CONFIG = {
     "excel_path": "",
@@ -19,6 +26,7 @@ DEFAULT_CONFIG = {
     "collector_source_dirs": [],
     "collector_output_dir": "",
     "collector_extensions": [".jpg", ".jpeg", ".png"],
+    "semantic_search_enabled": False,
 }
 
 COLUMN_ALIASES = {

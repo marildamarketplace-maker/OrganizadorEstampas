@@ -340,9 +340,9 @@ class CustomerOrderStructureTest(unittest.TestCase):
             for image in (image_a, duplicate_a, image_b):
                 image.parent.mkdir(parents=True, exist_ok=True)
                 image.write_bytes(b"imagem")
-            ignored_image = source_b / "MV" / "8000" / "8000-A.jpeg"
-            ignored_image.parent.mkdir(parents=True)
-            ignored_image.write_bytes(b"formato-nao-suportado")
+            jpeg_image = source_b / "MV" / "8000" / "8000-A.jpeg"
+            jpeg_image.parent.mkdir(parents=True)
+            jpeg_image.write_bytes(b"jpeg-suportado")
 
             cache = root / "indice.json"
             duplicates_log = root / "duplicidades.txt"
@@ -355,15 +355,15 @@ class CustomerOrderStructureTest(unittest.TestCase):
                 loaded = load_index([source_a, source_b])
 
             self.assertEqual(result.source_dirs, 2)
-            self.assertEqual(result.total_files, 3)
-            self.assertEqual(result.indexed_names, 2)
+            self.assertEqual(result.total_files, 4)
+            self.assertEqual(result.indexed_names, 3)
             self.assertEqual(result.duplicates, 1)
             self.assertEqual(
                 len(index[image_key("6652", "6652-A")]),
                 2,
             )
             self.assertIn(image_key("7001", "7001-X"), index)
-            self.assertNotIn(image_key("8000", "8000-A"), index)
+            self.assertIn(image_key("8000", "8000-A"), index)
             self.assertEqual(loaded, index)
             self.assertEqual(result.duplicates_log, str(duplicates_log.resolve()))
             log_text = duplicates_log.read_text(encoding="utf-8")

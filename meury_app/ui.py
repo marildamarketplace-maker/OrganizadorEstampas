@@ -6,12 +6,26 @@ import platform
 import subprocess
 import threading
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
+from .art_search import ArtSearchEngine, SearchResult, ThumbnailCache, principal_keywords
 from .config import APP_NAME, load_config, save_config
+from .analysis_batch import run_analysis_batch
+from .catalog_diagnostics import load_catalog_statistics
 from .image_collector import collect_images, format_size
-from .indexer import build_index, load_index, update_index_incremental
+from .image_analyzer import LocalImageAnalyzer
+from .indexer import (
+    append_analysis_result, build_index, load_index, pending_analysis_records,
+    index_catalog_available, update_index_incremental,
+)
 from .processor import process_csv_text, process_excel
+from .semantic_search import (
+    SemanticSearchIndex, merge_hybrid_results, record_identity,
+    semantic_index_status,
+)
+from .visual_search import (
+    VisualSearchIndex, visual_index_status, visual_record_identity,
+)
 
 
 class App:
@@ -24,6 +38,16 @@ class App:
         self.config = load_config()
         self.index = {}
         self.collector_cancel_event = None
+        self.analysis_run_event = None
+        self.analysis_cancel_event = None
+        self.search_engine = None
+        self.semantic_engine = None
+        self.visual_engine = None
+        self.search_lock = threading.Lock()
+        self.search_generation = 0
+        self.search_after_id = None
+        self.search_image_refs = []
+        self.thumbnail_cache = ThumbnailCache()
 
         self.excel_var = tk.StringVar(value=self.config.get("excel_path", ""))
         self.input_mode_var = tk.StringVar(
@@ -54,10 +78,24 @@ class App:
         )
         self.status_var = tk.StringVar(value="Selecione a planilha e as pastas.")
         self.index_status_var = tk.StringVar(value="Índice ainda não carregado.")
+        self.analysis_status_var = tk.StringVar(
+            value="A análise com IA está pronta para testes controlados."
+        )
+        self.analysis_current_var = tk.StringVar(value="Imagem atual: —")
+        self.semantic_enabled_var = tk.BooleanVar(
+            value=bool(self.config.get("semantic_search_enabled", False))
+        )
+        self.semantic_status_var = tk.StringVar(value="Verificando índice semântico...")
+        self.visual_status_var = tk.StringVar(value="Verificando índice visual...")
+        self.catalog_stats_var = tk.StringVar(value="Estatísticas: calculando em segundo plano...")
+        self.stats_generation = 0
 
         self._build_style()
         self._build_ui()
         self._try_load_saved_index()
+        self._refresh_semantic_status()
+        self._refresh_visual_status()
+        self._refresh_catalog_statistics()
 
     def _build_style(self):
         style = ttk.Style()
@@ -76,6 +114,8 @@ class App:
         notebook.pack(fill="both", expand=True)
         organizer_tab, organizer_page, organizer_canvas = self._scrollable_page(notebook)
         collector_tab, collector_page, collector_canvas = self._scrollable_page(notebook)
+        search_tab = ttk.Frame(notebook, padding=18)
+        notebook.add(search_tab, text="Pesquisar Artes")
         notebook.add(organizer_tab, text="Organizar pedidos")
         notebook.add(collector_tab, text="Copiar imagens")
 
@@ -104,6 +144,7 @@ class App:
 
         self._build_organizer_tab(organizer_page)
         self._build_collector_tab(collector_page)
+        self._build_search_tab(search_tab)
 
     def _scrollable_page(self, parent):
         container = ttk.Frame(parent)
@@ -195,7 +236,44 @@ class App:
             command=self.open_app_folder, style="Secondary.TButton"
         ).pack(side="left", padx=8)
 
-        process_frame = ttk.LabelFrame(main, text="3. Gerar pastas dos pedidos", padding=16)
+        analysis_frame = ttk.LabelFrame(
+            main, text="3. Análise das artes com GPT", padding=16
+        )
+        analysis_frame.pack(fill="x", pady=(0, 16))
+        self.analysis_button = ttk.Button(
+            analysis_frame, text="Gerar Palavras-chave com IA",
+            command=self.choose_analysis_batch, style="Primary.TButton",
+        )
+        self.analysis_button.pack(anchor="w")
+        self.analysis_progress = ttk.Progressbar(
+            analysis_frame, mode="determinate", maximum=100
+        )
+        self.analysis_progress.pack(fill="x", pady=(12, 8))
+        ttk.Label(
+            analysis_frame, textvariable=self.analysis_status_var, wraplength=820
+        ).pack(anchor="w")
+        ttk.Label(
+            analysis_frame, textvariable=self.analysis_current_var, wraplength=820
+        ).pack(anchor="w", pady=(4, 0))
+        analysis_actions = ttk.Frame(analysis_frame)
+        analysis_actions.pack(fill="x", pady=(10, 0))
+        self.analysis_pause_button = ttk.Button(
+            analysis_actions, text="PAUSAR", command=self.pause_analysis,
+            state="disabled",
+        )
+        self.analysis_pause_button.pack(side="left")
+        self.analysis_continue_button = ttk.Button(
+            analysis_actions, text="CONTINUAR", command=self.continue_analysis,
+            state="disabled",
+        )
+        self.analysis_continue_button.pack(side="left", padx=8)
+        self.analysis_cancel_button = ttk.Button(
+            analysis_actions, text="CANCELAR", command=self.cancel_analysis,
+            state="disabled",
+        )
+        self.analysis_cancel_button.pack(side="left")
+
+        process_frame = ttk.LabelFrame(main, text="4. Gerar pastas dos pedidos", padding=16)
         process_frame.pack(fill="both", expand=True)
 
         self.progress = ttk.Progressbar(process_frame, mode="determinate", maximum=100)
@@ -334,6 +412,760 @@ class App:
             style="Secondary.TButton",
         ).pack(side="left", padx=10)
 
+    def _build_search_tab(self, main):
+        ttk.Label(main, text="Pesquisar Artes", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(
+            main,
+            text="Pesquise por descrição, palavras-chave, cores, elementos, temas, categoria, nome ou caminho.",
+            style="Subtitle.TLabel",
+        ).pack(anchor="w", pady=(4, 14))
+        search_line = ttk.Frame(main)
+        search_line.pack(fill="x")
+        ttk.Label(search_line, text="Pesquisar artes...").pack(side="left", padx=(0, 8))
+        self.search_var = tk.StringVar()
+        self.search_entry = ttk.Entry(
+            search_line, textvariable=self.search_var, font=("Arial", 16)
+        )
+        self.search_entry.pack(side="left", fill="x", expand=True, ipady=8)
+        self.search_entry.insert(0, "")
+        self.search_entry.bind("<Return>", lambda _event: self.start_art_search())
+        self.search_entry.bind("<KeyRelease>", self._schedule_art_search)
+        ttk.Button(
+            search_line, text="PESQUISAR", command=self.start_art_search,
+            style="Primary.TButton",
+        ).pack(side="left", padx=(10, 0))
+        ttk.Button(
+            search_line, text="Recarregar catálogo", command=self.reload_art_search,
+            style="Secondary.TButton",
+        ).pack(side="left", padx=(8, 0))
+        advanced_line = ttk.Frame(main)
+        advanced_line.pack(fill="x", pady=(10, 0))
+        self.advanced_search_button = ttk.Menubutton(
+            advanced_line, text="Pesquisa avançada ▾", style="Secondary.TButton"
+        )
+        advanced_menu = tk.Menu(self.advanced_search_button, tearoff=False)
+        advanced_menu.add_checkbutton(
+            label="Ativar busca semântica",
+            variable=self.semantic_enabled_var,
+            command=self._semantic_option_changed,
+        )
+        advanced_menu.add_separator()
+        advanced_menu.add_command(
+            label="Encontrar imagens semelhantes...",
+            command=self.select_similar_image,
+        )
+        advanced_menu.add_separator()
+        advanced_menu.add_command(
+            label="Atualizar índice semântico",
+            command=lambda: self.start_semantic_update(False),
+        )
+        advanced_menu.add_command(
+            label="Reconstruir índice semântico",
+            command=lambda: self.start_semantic_update(True),
+        )
+        advanced_menu.add_separator()
+        advanced_menu.add_command(
+            label="Como funciona a busca semântica?",
+            command=self.show_semantic_help,
+        )
+        advanced_menu.add_command(
+            label="Como funcionam as imagens semelhantes?",
+            command=self.show_similar_help,
+        )
+        self.advanced_search_button.configure(menu=advanced_menu)
+        self.advanced_search_button.pack(side="left")
+        self.semantic_update_button = self.advanced_search_button
+        self.semantic_rebuild_button = self.advanced_search_button
+        self.visual_find_button = self.advanced_search_button
+        self.visual_update_button = self.advanced_search_button
+        self.visual_rebuild_button = self.advanced_search_button
+        stats = ttk.LabelFrame(main, text="Estatísticas do catálogo", padding=8)
+        stats.pack(fill="x", pady=(9, 0))
+        ttk.Label(stats, textvariable=self.catalog_stats_var, wraplength=850).pack(anchor="w")
+        self.search_status_var = tk.StringVar(
+            value="Digite, por exemplo: flores vermelhas, Natal ou xadrez azul."
+        )
+        ttk.Label(
+            main, textvariable=self.search_status_var, wraplength=850
+        ).pack(anchor="w", pady=(10, 8))
+
+        results_container = ttk.Frame(main)
+        results_container.pack(fill="both", expand=True)
+        self.search_canvas = tk.Canvas(results_container, highlightthickness=0)
+        search_scrollbar = ttk.Scrollbar(
+            results_container, orient="vertical", command=self.search_canvas.yview
+        )
+        self.search_results_frame = ttk.Frame(self.search_canvas)
+        self.search_results_window = self.search_canvas.create_window(
+            (0, 0), window=self.search_results_frame, anchor="nw"
+        )
+        self.search_canvas.configure(yscrollcommand=search_scrollbar.set)
+        self.search_canvas.pack(side="left", fill="both", expand=True)
+        search_scrollbar.pack(side="right", fill="y")
+        self.search_results_frame.bind(
+            "<Configure>",
+            lambda _event: self.search_canvas.configure(
+                scrollregion=self.search_canvas.bbox("all")
+            ),
+        )
+        self.search_canvas.bind(
+            "<Configure>",
+            lambda event: self.search_canvas.itemconfigure(
+                self.search_results_window, width=event.width
+            ),
+        )
+        self.search_canvas.bind_all("<MouseWheel>", self._search_mousewheel, add="+")
+        self.search_canvas.bind_all("<Button-4>", self._search_mousewheel, add="+")
+        self.search_canvas.bind_all("<Button-5>", self._search_mousewheel, add="+")
+
+    def _search_mousewheel(self, event):
+        if not hasattr(self, "search_canvas"):
+            return
+        widget = self.root.winfo_containing(event.x_root, event.y_root)
+        if widget is None:
+            return
+        current = widget
+        inside = False
+        while current is not None:
+            if current == self.search_canvas:
+                inside = True
+                break
+            current = getattr(current, "master", None)
+        if not inside:
+            return
+        if getattr(event, "num", None) == 4:
+            amount = -1
+        elif getattr(event, "num", None) == 5:
+            amount = 1
+        else:
+            amount = -1 if event.delta > 0 else 1
+        self.search_canvas.yview_scroll(amount, "units")
+        return "break"
+
+    def _schedule_art_search(self, _event=None):
+        if self.search_after_id:
+            self.root.after_cancel(self.search_after_id)
+        self.search_after_id = self.root.after(450, self.start_art_search)
+
+    def reload_art_search(self):
+        self.search_engine = None
+        self.semantic_engine = None
+        self.start_art_search()
+
+    def _refresh_catalog_statistics(self):
+        self.stats_generation += 1
+        generation = self.stats_generation
+        if not self.source_dirs:
+            self.catalog_stats_var.set("Nenhuma pasta de artes configurada.")
+            return
+        self.catalog_stats_var.set("Estatísticas: calculando em segundo plano...")
+
+        def worker():
+            try:
+                result = load_catalog_statistics([Path(source) for source in self.source_dirs])
+                self.root.after(0, self._show_catalog_statistics, generation, result)
+            except Exception as exc:
+                self.root.after(0, self.catalog_stats_var.set, f"Estatísticas indisponíveis: {exc}")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_catalog_statistics(self, generation, result):
+        if generation != self.stats_generation:
+            return
+        self.catalog_stats_var.set(
+            f"Total de imagens: {result.total:,}   |   Com palavras-chave: "
+            f"{result.with_keywords:,}   |   Sem palavras-chave: {result.without_keywords:,}\n"
+            f"Com embedding: {result.with_embedding:,}   |   Pendentes: "
+            f"{result.pending:,}   |   Erros: {result.errors:,}"
+        )
+
+    def _semantic_option_changed(self):
+        self._save_paths()
+        self._refresh_semantic_status()
+        if self.search_var.get().strip():
+            self.start_art_search()
+
+    def show_semantic_help(self):
+        messagebox.showinfo(
+            "Busca semântica",
+            "A busca semântica entende o significado da pesquisa, mesmo quando as "
+            "palavras digitadas não são exatamente iguais às palavras do catálogo.\n\n"
+            "Exemplo: procurar por ‘campanha contra câncer de mama’ também pode "
+            "encontrar artes marcadas como Outubro Rosa, laço rosa, saúde feminina "
+            "e prevenção.\n\n"
+            "Antes de usar, gere as palavras-chave das imagens e atualize o índice "
+            "semântico.",
+        )
+
+    def show_similar_help(self):
+        messagebox.showinfo(
+            "Imagens semelhantes",
+            "Essa pesquisa usa a descrição, as cores, os elementos, os temas e a "
+            "categoria gerados pelo GPT para localizar artes com conteúdo parecido.\n\n"
+            "Ela compara o significado visual, não os pixels ou arquivos idênticos. "
+            "Para melhores resultados, gere as palavras-chave e atualize o índice "
+            "semântico.",
+        )
+
+    def _mark_semantic_stale(self):
+        self.semantic_engine = None
+        available, _message, count = semantic_index_status()
+        if available:
+            self.semantic_status_var.set(
+                f"Índice semântico existente para {count:,} artes; clique em "
+                "Atualizar índice semântico para incorporar as alterações."
+            )
+
+    def _refresh_semantic_status(self):
+        available, message, _count = semantic_index_status()
+        state = "ativada" if self.semantic_enabled_var.get() else "desativada"
+        self.semantic_status_var.set(f"Busca semântica {state}. {message}")
+        return available
+
+    def start_semantic_update(self, rebuild=False):
+        if not self.source_dirs:
+            messagebox.showwarning("Índice necessário", "Adicione e indexe as pastas primeiro.")
+            return
+        if not self._ensure_openai_api_key():
+            return
+        if rebuild and not messagebox.askyesno(
+            "Reconstruir índice semântico",
+            "Deseja recalcular todos os embeddings semânticos? Os arquivos de imagens não serão alterados.",
+        ):
+            return
+        self._set_busy(True)
+        action = "Reconstruindo" if rebuild else "Atualizando"
+        self.semantic_status_var.set(f"{action} o índice semântico OpenAI...")
+        threading.Thread(
+            target=self._semantic_update_worker, args=(rebuild,), daemon=True
+        ).start()
+
+    def _semantic_update_worker(self, rebuild):
+        try:
+            engine = SemanticSearchIndex([Path(source) for source in self.source_dirs])
+            result = engine.update(
+                rebuild=rebuild,
+                progress_callback=lambda current, total, message: self.root.after(
+                    0, self._semantic_update_progress, current, total, message
+                ),
+            )
+            self.root.after(0, self._semantic_update_complete, engine, result)
+        except Exception as exc:
+            self.root.after(0, self._semantic_update_failed, str(exc))
+
+    def _semantic_update_progress(self, current, total, message):
+        percent = current / total * 100 if total else 100
+        self.semantic_status_var.set(f"{message} ({percent:.1f}%)")
+
+    def _semantic_update_complete(self, engine, result):
+        engine.release_model()
+        self.semantic_engine = engine
+        text = (
+            f"Índice semântico pronto: {result.total_eligible:,} artes; "
+            f"{result.added:,} novas; {result.updated:,} alteradas; "
+            f"{result.removed:,} removidas; {result.reused:,} reutilizadas."
+        )
+        self.semantic_status_var.set(text)
+        self._refresh_visual_status()
+        self._set_busy(False)
+        self._refresh_catalog_statistics()
+        if self.search_var.get().strip() and self.semantic_enabled_var.get():
+            self.start_art_search()
+        messagebox.showinfo("Busca semântica", text)
+
+    def _semantic_update_failed(self, message):
+        self.semantic_status_var.set(f"Busca semântica indisponível: {message}")
+        self._set_busy(False)
+        messagebox.showerror("Erro no índice semântico", message)
+
+    def _refresh_visual_status(self):
+        available, _message, count = semantic_index_status()
+        self.visual_status_var.set(
+            f"Similaridade por conteúdo disponível para {count:,} artes."
+            if available else
+            "Crie o índice semântico OpenAI para encontrar imagens semelhantes."
+        )
+
+    def _mark_visual_stale(self):
+        self.semantic_engine = None
+        available, _message, count = semantic_index_status()
+        if available:
+            self.visual_status_var.set(
+                f"Índice de semelhantes existente para {count:,} artes; clique em "
+                "Atualizar índice para semelhantes após gerar novos metadados."
+            )
+
+    def start_visual_update(self, rebuild=False):
+        if not self.source_dirs:
+            messagebox.showwarning("Índice necessário", "Adicione e indexe as pastas primeiro.")
+            return
+        question = (
+            "Deseja recalcular todos os embeddings visuais? Esta operação pode demorar "
+            "muitas horas, mas não altera as imagens."
+            if rebuild else
+            "Deseja atualizar os embeddings visuais? Somente imagens novas ou alteradas serão processadas."
+        )
+        if not messagebox.askyesno("Índice visual", question):
+            return
+        self._set_busy(True)
+        self.visual_status_var.set(
+            "Reconstruindo o índice visual..." if rebuild else "Atualizando o índice visual..."
+        )
+        threading.Thread(
+            target=self._visual_update_worker, args=(rebuild,), daemon=True
+        ).start()
+
+    def _visual_update_worker(self, rebuild):
+        try:
+            engine = VisualSearchIndex([Path(source) for source in self.source_dirs])
+            result = engine.update(
+                rebuild=rebuild,
+                progress_callback=lambda current, total, errors, message: self.root.after(
+                    0, self._visual_update_progress, current, total, errors, message
+                ),
+            )
+            self.root.after(0, self._visual_update_complete, engine, result)
+        except Exception as exc:
+            self.root.after(0, self._visual_update_failed, str(exc))
+
+    def _visual_update_progress(self, current, total, errors, message):
+        percent = current / total * 100 if total else 100
+        self.visual_status_var.set(f"{message} ({percent:.1f}%) | Erros: {errors:,}")
+
+    def _visual_update_complete(self, engine, result):
+        engine.release_model()
+        self.visual_engine = engine
+        text = (
+            f"Índice visual pronto: {result.total_eligible:,} artes; "
+            f"{result.added:,} novas; {result.updated:,} alteradas; "
+            f"{result.removed:,} removidas; {result.reused:,} reutilizadas; "
+            f"{result.errors:,} erros."
+        )
+        self.visual_status_var.set(text)
+        self._set_busy(False)
+        messagebox.showinfo("Índice visual", text)
+
+    def _visual_update_failed(self, message):
+        self.visual_status_var.set(f"Índice visual indisponível: {message}")
+        self._set_busy(False)
+        messagebox.showerror("Erro no índice visual", message)
+
+    def select_similar_image(self):
+        path = filedialog.askopenfilename(
+            title="Selecione uma arte para encontrar semelhantes",
+            filetypes=[("Imagens", "*.jpg *.jpeg *.png"), ("Todos os arquivos", "*.*")],
+        )
+        if path:
+            self.find_similar_images(Path(path))
+
+    def find_similar_images(self, image_path, source_record=None):
+        if not self.source_dirs:
+            messagebox.showwarning("Índice necessário", "Adicione e indexe as pastas primeiro.")
+            return
+        if not Path(image_path).is_file():
+            messagebox.showerror("Imagem indisponível", f"A imagem não foi encontrada:\n{image_path}")
+            return
+        if Path(image_path).suffix.casefold() not in {".jpg", ".jpeg", ".png"}:
+            messagebox.showwarning(
+                "Formato não suportado",
+                "A busca por semelhantes aceita imagens JPG, JPEG e PNG.",
+            )
+            return
+        if not self._ensure_openai_api_key():
+            return
+        self.search_generation += 1
+        generation = self.search_generation
+        self.search_status_var.set("Analisando o conteúdo e procurando artes semelhantes...")
+        threading.Thread(
+            target=self._similar_images_worker,
+            args=(Path(image_path), source_record, generation), daemon=True,
+        ).start()
+
+    def _similar_images_worker(self, image_path, source_record, generation):
+        try:
+            if generation != self.search_generation:
+                return
+            with self.search_lock:
+                if generation != self.search_generation:
+                    return
+                if self.search_engine is None:
+                    self.search_engine = ArtSearchEngine(
+                        [Path(source) for source in self.source_dirs]
+                    )
+                    total_records = self.search_engine.load()
+                else:
+                    total_records = len(self.search_engine._documents)
+                if self.semantic_engine is None:
+                    self.semantic_engine = SemanticSearchIndex(
+                        [Path(source) for source in self.source_dirs]
+                    )
+                    self.semantic_engine.load()
+                records = {
+                    record_identity(record): record
+                    for record, _fields in self.search_engine._documents
+                }
+                if source_record and any(source_record.get(field) for field in (
+                    "description", "keywords", "colors", "elements", "themes", "category"
+                )):
+                    from .semantic_search import semantic_document
+                    document = semantic_document(source_record)
+                else:
+                    analysis = LocalImageAnalyzer().analyze(image_path)
+                    document = (
+                        f"descrição: {analysis.description}. palavras-chave: "
+                        f"{', '.join(analysis.keywords)}. cores: {', '.join(analysis.colors)}. "
+                        f"elementos: {', '.join(analysis.elements)}. temas: "
+                        f"{', '.join(analysis.themes)}. categoria: {analysis.category}"
+                    )
+                similar = self.semantic_engine.search_document(
+                    document, records, limit=201
+                )
+                exclude = record_identity(source_record) if source_record else None
+                if exclude:
+                    similar = [item for item in similar if record_identity(item[0]) != exclude]
+                similar = similar[:200]
+                results = [
+                    SearchResult(record, similarity, similarity)
+                    for record, similarity in similar
+                ]
+            self.root.after(
+                0, self._show_search_results,
+                f"semelhantes a {Path(image_path).name}", generation,
+                total_records, results, " Similaridade por conteúdo gerado pelo GPT.",
+            )
+        except Exception as exc:
+            self.root.after(0, self._search_error, generation, str(exc))
+
+    def show_art_context_menu(self, event, record):
+        menu = tk.Menu(self.root, tearoff=False)
+        menu.add_command(
+            label="Encontrar semelhantes",
+            command=lambda: self.find_similar_images(record.get("path", ""), record),
+        )
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def start_art_search(self):
+        self.search_after_id = None
+        query = self.search_var.get().strip()
+        if not query:
+            self.search_status_var.set("Digite o que deseja localizar no catálogo.")
+            return
+        if not self.source_dirs:
+            messagebox.showwarning("Índice necessário", "Adicione e indexe as pastas primeiro.")
+            return
+        self.search_generation += 1
+        generation = self.search_generation
+        self.search_status_var.set("Pesquisando no catálogo...")
+        semantic_enabled = self.semantic_enabled_var.get()
+        thread = threading.Thread(
+            target=self._search_worker,
+            args=(query, generation, semantic_enabled), daemon=True,
+        )
+        thread.start()
+
+    def _search_worker(self, query, generation, semantic_enabled):
+        try:
+            if generation != self.search_generation:
+                return
+            with self.search_lock:
+                # Digitação rápida pode criar várias solicitações. As antigas
+                # saem antes de percorrer os 195 mil documentos.
+                if generation != self.search_generation:
+                    return
+                if self.search_engine is None:
+                    self.search_engine = ArtSearchEngine(
+                        [Path(source) for source in self.source_dirs]
+                    )
+                    total_records = self.search_engine.load()
+                else:
+                    total_records = len(self.search_engine._documents)
+                text_results = self.search_engine.search(query, limit=250)
+                semantic_message = ""
+                if semantic_enabled:
+                    try:
+                        if self.semantic_engine is None:
+                            self.semantic_engine = SemanticSearchIndex(
+                                [Path(source) for source in self.source_dirs]
+                            )
+                            self.semantic_engine.load()
+                        records_by_identity = {
+                            record_identity(record): record
+                            for record, _fields in self.search_engine._documents
+                        }
+                        semantic_results = self.semantic_engine.search(
+                            query, records_by_identity, limit=300
+                        )
+                        hybrid = merge_hybrid_results(
+                            text_results, semantic_results, limit=200
+                        )
+                        results = [SearchResult(record, score) for record, score in hybrid]
+                        semantic_message = " Busca híbrida textual + semântica."
+                    except Exception as exc:
+                        results = text_results[:200]
+                        semantic_message = f" Busca semântica indisponível nesta consulta: {exc}"
+                else:
+                    results = text_results[:200]
+            self.root.after(
+                0, self._show_search_results, query, generation, total_records,
+                results, semantic_message,
+            )
+        except Exception as exc:
+            self.root.after(0, self._search_error, generation, str(exc))
+
+    def _search_error(self, generation, message):
+        if generation != self.search_generation:
+            return
+        self.search_status_var.set(f"Não foi possível pesquisar: {message}")
+
+    def _show_search_results(
+        self, query, generation, total_records, results, semantic_message=""
+    ):
+        if generation != self.search_generation:
+            return
+        for child in self.search_results_frame.winfo_children():
+            child.destroy()
+        self.search_image_refs = []
+        self.search_canvas.yview_moveto(0)
+        if not results:
+            self.search_status_var.set(
+                f"Nenhuma arte encontrada para “{query}” em {total_records:,} registros."
+            )
+            return
+        suffix = " Exibindo os 200 mais relevantes." if len(results) == 200 else ""
+        self.search_status_var.set(
+            f"{len(results):,} resultado(s) para “{query}” em "
+            f"{total_records:,} registros.{suffix}{semantic_message}"
+        )
+        columns = 4
+        thumbnail_jobs = []
+        for position, result in enumerate(results):
+            row, column = divmod(position, columns)
+            card = ttk.Frame(self.search_results_frame, padding=7, relief="ridge")
+            card.grid(row=row, column=column, padx=5, pady=5, sticky="nsew")
+            image_label = tk.Label(
+                card, text="Carregando miniatura...", width=25, height=9,
+                bg="#eeeeee", cursor="hand2",
+            )
+            image_label.pack(fill="x")
+            filename = str(result.record.get("filename", "Sem nome"))
+            ttk.Label(card, text=filename, font=("Arial", 10, "bold"), wraplength=195).pack(
+                anchor="w", pady=(6, 2)
+            )
+            if result.similarity is not None:
+                ttk.Label(
+                    card,
+                    text=f"Similaridade: {result.similarity * 100:.0f}%",
+                    font=("Arial", 9, "bold"),
+                ).pack(anchor="w", pady=(0, 2))
+            keywords = principal_keywords(result.record) or "Sem palavras-chave"
+            ttk.Label(card, text=keywords, wraplength=195).pack(anchor="w")
+            for widget in (card, image_label):
+                widget.bind(
+                    "<Button-1>",
+                    lambda _event, record=result.record: self.open_art_details(record),
+                )
+                widget.bind(
+                    "<Button-3>",
+                    lambda event, record=result.record: self.show_art_context_menu(event, record),
+                )
+                widget.bind(
+                    "<Button-2>",
+                    lambda event, record=result.record: self.show_art_context_menu(event, record),
+                )
+            thumbnail_jobs.append((image_label, result.record))
+        for column in range(columns):
+            self.search_results_frame.columnconfigure(column, weight=1)
+        threading.Thread(
+            target=self._thumbnail_worker,
+            args=(generation, thumbnail_jobs), daemon=True,
+        ).start()
+
+    def _thumbnail_worker(self, generation, jobs):
+        for label, record in jobs:
+            if generation != self.search_generation:
+                return
+            try:
+                cached = self.thumbnail_cache.get_or_create(
+                    record.get("path", ""), size=(200, 150)
+                )
+                self.root.after(0, self._apply_thumbnail, generation, label, str(cached))
+            except Exception:
+                self.root.after(0, self._thumbnail_failed, generation, label)
+
+    def _apply_thumbnail(self, generation, label, cached_path):
+        if generation != self.search_generation or not label.winfo_exists():
+            return
+        from PIL import Image, ImageTk
+        with Image.open(cached_path) as image:
+            photo = ImageTk.PhotoImage(image.copy())
+        label.configure(image=photo, text="", width=200, height=150)
+        label.image = photo
+        self.search_image_refs.append(photo)
+
+    def _thumbnail_failed(self, generation, label):
+        if generation == self.search_generation and label.winfo_exists():
+            label.configure(text="Miniatura indisponível")
+
+    def open_art_details(self, record):
+        dialog = tk.Toplevel(self.root)
+        dialog.title(str(record.get("filename", "Detalhes da arte")))
+        dialog.geometry("900x820")
+        dialog.minsize(680, 600)
+        body = ttk.Frame(dialog, padding=18)
+        body.pack(fill="both", expand=True)
+        preview = tk.Label(
+            body, text="Carregando visualização...", bg="#eeeeee", height=22
+        )
+        preview.pack(fill="both", expand=True)
+
+        path = str(record.get("path", ""))
+        ttk.Label(
+            body, text=path, wraplength=840, font=("Arial", 9)
+        ).pack(anchor="w", pady=(12, 8))
+        details = ttk.Frame(body)
+        details.pack(fill="x")
+        description = str(record.get("description") or "Sem descrição")
+        ttk.Label(details, text="Descrição:", font=("Arial", 10, "bold")).grid(
+            row=0, column=0, sticky="nw", pady=3
+        )
+        ttk.Label(details, text=description, wraplength=700).grid(
+            row=0, column=1, sticky="w", pady=3
+        )
+        keywords_var = tk.StringVar(value=self._metadata_text(record.get("keywords")))
+        rows = (
+            ("Palavras-chave:", keywords_var),
+            ("Cores:", self._metadata_text(record.get("colors"))),
+            ("Elementos:", self._metadata_text(record.get("elements"))),
+            ("Temas:", self._metadata_text(record.get("themes"))),
+            ("Categoria:", str(record.get("category") or "—")),
+        )
+        for row, (label, value) in enumerate(rows, start=1):
+            ttk.Label(details, text=label, font=("Arial", 10, "bold")).grid(
+                row=row, column=0, sticky="nw", pady=3
+            )
+            value_options = (
+                {"textvariable": value} if isinstance(value, tk.StringVar)
+                else {"text": value}
+            )
+            ttk.Label(details, wraplength=700, **value_options).grid(
+                row=row, column=1, sticky="w", pady=3
+            )
+        details.columnconfigure(1, weight=1)
+
+        actions = ttk.Frame(body)
+        actions.pack(fill="x", pady=(14, 0))
+        ttk.Button(
+            actions, text="Abrir imagem", command=lambda: self._open_file(Path(path))
+        ).pack(side="left")
+        ttk.Button(
+            actions, text="Abrir pasta", command=lambda: self._open_directory(Path(path).parent)
+        ).pack(side="left", padx=6)
+        ttk.Button(
+            actions, text="Copiar caminho", command=lambda: self._copy_text(path)
+        ).pack(side="left", padx=6)
+        ttk.Button(
+            actions, text="Copiar nome do arquivo",
+            command=lambda: self._copy_text(str(record.get("filename", ""))),
+        ).pack(side="left", padx=6)
+        ttk.Button(
+            actions, text="Editar palavras-chave",
+            command=lambda: self._edit_art_keywords(dialog, record, keywords_var),
+        ).pack(side="left", padx=6)
+        ttk.Button(
+            actions, text="Encontrar semelhantes",
+            command=lambda: self.find_similar_images(path, record),
+        ).pack(side="left", padx=6)
+        threading.Thread(
+            target=self._detail_preview_worker,
+            args=(dialog, preview, path), daemon=True,
+        ).start()
+
+    @staticmethod
+    def _metadata_text(value):
+        if isinstance(value, list):
+            return ", ".join(str(item) for item in value) or "—"
+        return str(value or "—")
+
+    def _detail_preview_worker(self, dialog, label, path):
+        try:
+            cached = self.thumbnail_cache.get_or_create(path, size=(760, 500))
+            self.root.after(0, self._apply_detail_preview, dialog, label, str(cached))
+        except Exception:
+            self.root.after(
+                0, lambda: label.winfo_exists() and label.configure(
+                    text="Visualização indisponível"
+                )
+            )
+
+    def _apply_detail_preview(self, dialog, label, cached_path):
+        if not dialog.winfo_exists() or not label.winfo_exists():
+            return
+        from PIL import Image, ImageTk
+        with Image.open(cached_path) as image:
+            photo = ImageTk.PhotoImage(image.copy())
+        label.configure(image=photo, text="", height=500)
+        label.image = photo
+        dialog.preview_image = photo
+
+    def _edit_art_keywords(self, parent, record, variable):
+        current = self._metadata_text(record.get("keywords"))
+        if current == "—":
+            current = ""
+        value = simpledialog.askstring(
+            "Editar palavras-chave",
+            "Separe as palavras-chave por vírgulas:",
+            initialvalue=current,
+            parent=parent,
+        )
+        if value is None:
+            return
+        keywords, seen = [], set()
+        for item in value.split(","):
+            cleaned = item.strip().casefold()
+            if cleaned and cleaned not in seen:
+                keywords.append(cleaned)
+                seen.add(cleaned)
+        try:
+            append_analysis_result(record, metadata={"keywords": keywords})
+            record["keywords"] = keywords
+            variable.set(self._metadata_text(keywords))
+            self.search_engine = None
+            self._mark_semantic_stale()
+            messagebox.showinfo(
+                "Palavras-chave", "Alteração salva no catálogo local.", parent=parent
+            )
+        except Exception as exc:
+            messagebox.showerror("Erro ao salvar", str(exc), parent=parent)
+
+    def _copy_text(self, value):
+        self.root.clipboard_clear()
+        self.root.clipboard_append(value)
+        self.root.update_idletasks()
+
+    def _open_file(self, path: Path):
+        if not path.is_file():
+            messagebox.showerror("Arquivo indisponível", f"O arquivo não foi encontrado:\n{path}")
+            return
+        system = platform.system()
+        if system == "Windows":
+            os.startfile(path)  # type: ignore[attr-defined]
+        elif system == "Darwin":
+            subprocess.run(["open", str(path)], check=False)
+        else:
+            subprocess.run(["xdg-open", str(path)], check=False)
+
+    def _open_directory(self, path: Path):
+        if not path.is_dir():
+            messagebox.showerror("Pasta indisponível", f"A pasta não foi encontrada:\n{path}")
+            return
+        system = platform.system()
+        if system == "Windows":
+            os.startfile(path)  # type: ignore[attr-defined]
+        elif system == "Darwin":
+            subprocess.run(["open", str(path)], check=False)
+        else:
+            subprocess.run(["xdg-open", str(path)], check=False)
+
     def _path_row(self, parent, row, label, variable, button_text, command):
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=7)
         ttk.Entry(parent, textvariable=variable).grid(
@@ -430,6 +1262,9 @@ class App:
             self._refresh_source_list()
             self._save_paths()
             self.index = {}
+            self.search_engine = None
+            self.semantic_engine = None
+            self.visual_engine = None
             self.index_status_var.set(
                 "Pastas alteradas. Clique em Atualizar índice."
             )
@@ -443,6 +1278,9 @@ class App:
         self._refresh_source_list()
         self._save_paths()
         self.index = {}
+        self.search_engine = None
+        self.semantic_engine = None
+        self.visual_engine = None
         self.index_status_var.set(
             "Pastas alteradas. Clique em Atualizar índice."
         )
@@ -492,17 +1330,19 @@ class App:
                 for extension, variable in self.collector_extension_vars.items()
                 if variable.get()
             ],
+            "semantic_search_enabled": self.semantic_enabled_var.get(),
         })
 
     def _try_load_saved_index(self):
         sources = [Path(source) for source in self.source_dirs]
         if not sources:
             return
-        self.index = load_index(sources)
-        if self.index:
+        # O dicionário completo (centenas de milhares de caminhos) só é carregado
+        # quando o organizador de pedidos realmente precisar dele.
+        if index_catalog_available(sources):
             self.index_status_var.set(
-                f"Índice carregado de {len(sources)} pasta(s): "
-                f"{len(self.index):,} nomes de imagens."
+                f"Catálogo disponível para {len(sources)} pasta(s). "
+                "O índice de pedidos será carregado sob demanda."
             )
 
     def start_indexing(self):
@@ -545,6 +1385,9 @@ class App:
         self._log(message)
 
     def _index_complete(self, result):
+        self.search_engine = None
+        self._mark_semantic_stale()
+        self._mark_visual_stale()
         self.progress.stop()
         self.progress.configure(mode="determinate", value=100)
         self.index_status_var.set(
@@ -568,6 +1411,7 @@ class App:
             alert += f"\n\nConsulte o log para ajustar manualmente:\n{result.duplicates_log}"
         messagebox.showinfo("Índice concluído", alert)
         self._set_busy(False)
+        self._refresh_catalog_statistics()
 
     def start_incremental_indexing(self):
         sources = [Path(source) for source in self.source_dirs]
@@ -604,6 +1448,9 @@ class App:
             self.root.after(0, self._show_error, str(exc))
 
     def _incremental_index_complete(self, result):
+        self.search_engine = None
+        self._mark_semantic_stale()
+        self._mark_visual_stale()
         self.progress.stop()
         self.progress.configure(mode="determinate", value=100)
         self.index_status_var.set(
@@ -614,18 +1461,223 @@ class App:
         self._log(
             f"Atualização rápida concluída em {result.elapsed_seconds:.1f}s. "
             f"Imagens verificadas: {result.scanned_files:,}. "
-            f"Novas: {result.added_files:,}. Duplicados: {result.duplicates:,}."
+            f"Novas: {result.added_files:,}. Alteradas: {result.changed_files:,}. "
+            f"Movidas/renomeadas: {result.moved_files:,}. "
+            f"Removidas: {result.removed_files:,}. "
+            f"Duplicados: {result.duplicates:,}."
         )
         if result.duplicates_log:
             self._log(f"Log de duplicidades: {result.duplicates_log}")
         alert = (
             f"Imagens novas adicionadas: {result.added_files:,}\n"
+            f"Alteradas: {result.changed_files:,}\n"
+            f"Movidas ou renomeadas: {result.moved_files:,}\n"
+            f"Removidas: {result.removed_files:,}\n"
             f"Duplicidades no índice: {result.duplicates:,}\n\n"
-            "Use a atualização completa após excluir ou renomear imagens."
+            "Os dados já associados às imagens foram preservados."
         )
         if result.duplicates_log:
             alert += f"\n\nLog de duplicidades:\n{result.duplicates_log}"
         messagebox.showinfo("Imagens novas adicionadas", alert)
+        self._set_busy(False)
+        self._refresh_catalog_statistics()
+
+    def _ensure_openai_api_key(self):
+        if not os.environ.get("OPENAI_API_KEY", "").strip():
+            api_key = simpledialog.askstring(
+                "Chave da API OpenAI",
+                "Cole sua chave da API OpenAI. Ela será mantida somente enquanto "
+                "o aplicativo estiver aberto:",
+                parent=self.root,
+                show="*",
+            )
+            if not api_key or not api_key.strip():
+                return False
+            os.environ["OPENAI_API_KEY"] = api_key.strip()
+        return True
+
+    def choose_analysis_batch(self):
+        if not self._ensure_openai_api_key():
+            return
+        sources = [Path(source) for source in self.source_dirs]
+        if not sources:
+            messagebox.showwarning(
+                "Índice necessário", "Adicione e indexe as pastas de estampas primeiro."
+            )
+            return
+        try:
+            pending, total_pending = pending_analysis_records(sources)
+        except Exception as exc:
+            messagebox.showerror("Não foi possível iniciar", str(exc))
+            return
+        if not pending:
+            messagebox.showinfo(
+                "Análise com IA", "Não há imagens JPG, JPEG ou PNG pendentes."
+            )
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Escolher quantidade")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+        body = ttk.Frame(dialog, padding=20)
+        body.pack(fill="both", expand=True)
+        ttk.Label(
+            body,
+            text=f"Existem {total_pending:,} imagens pendentes. Quanto deseja processar?",
+            wraplength=440,
+        ).pack(anchor="w", pady=(0, 12))
+        choice = tk.StringVar(value="1")
+        for value in ("1", "10", "50", "100", "all"):
+            if value == "all":
+                label = "Todas as imagens pendentes"
+            elif value == "1":
+                label = "1 imagem (recomendado para teste)"
+            else:
+                label = f"{int(value):,} imagens"
+            ttk.Radiobutton(
+                body, text=label, variable=choice, value=value
+            ).pack(anchor="w", pady=2)
+        actions = ttk.Frame(body)
+        actions.pack(fill="x", pady=(16, 0))
+
+        def confirm():
+            selected_limit = None if choice.get() == "all" else int(choice.get())
+            dialog.destroy()
+            self.start_analysis_batch(
+                pending if selected_limit is None else pending[:selected_limit],
+                total_pending,
+            )
+
+        ttk.Button(actions, text="INICIAR", command=confirm).pack(side="left")
+        ttk.Button(actions, text="Cancelar", command=dialog.destroy).pack(
+            side="left", padx=8
+        )
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+        dialog.wait_window()
+
+    def start_analysis_batch(self, records, total_pending):
+        self.analysis_run_event = threading.Event()
+        self.analysis_run_event.set()
+        self.analysis_cancel_event = threading.Event()
+        self.analysis_total_pending = total_pending
+        self._set_busy(True)
+        self.analysis_pause_button.configure(state="normal")
+        self.analysis_continue_button.configure(state="disabled")
+        self.analysis_cancel_button.configure(state="normal")
+        self.analysis_progress.configure(value=0)
+        self.analysis_status_var.set(
+            f"Conectando à API OpenAI. Selecionadas {len(records):,} de "
+            f"{total_pending:,} imagens pendentes..."
+        )
+        self.analysis_current_var.set("Imagem atual: aguardando o modelo...")
+        thread = threading.Thread(
+            target=self._analysis_worker, args=(records,), daemon=True
+        )
+        thread.start()
+
+    def _analysis_worker(self, records):
+        try:
+            result = run_analysis_batch(
+                records,
+                run_event=self.analysis_run_event,
+                cancel_event=self.analysis_cancel_event,
+                current_callback=lambda path: self.root.after(
+                    0, self.analysis_current_var.set, f"Imagem atual: {path}"
+                ),
+                progress_callback=lambda *values: self.root.after(
+                    0, self._analysis_progress, *values
+                ),
+            )
+            self.root.after(0, self._analysis_complete, result)
+        except Exception as exc:
+            self.root.after(0, self._analysis_failed, str(exc))
+
+    @staticmethod
+    def _format_duration(seconds):
+        seconds = max(0, int(seconds))
+        hours, remainder = divmod(seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        if hours:
+            return f"{hours}h {minutes:02d}m {seconds:02d}s"
+        if minutes:
+            return f"{minutes}m {seconds:02d}s"
+        return f"{seconds}s"
+
+    def _analysis_progress(self, completed, selected, errors, path, elapsed):
+        percent = completed / selected * 100 if selected else 0
+        speed = completed / elapsed if elapsed > 0 else 0
+        remaining = (selected - completed) / speed if speed > 0 else 0
+        self.analysis_progress.configure(value=percent)
+        self.analysis_status_var.set(
+            f"Processando: {completed:,} / {selected:,} | {percent:.1f}% | "
+            f"Total pendente ao iniciar: {self.analysis_total_pending:,} | "
+            f"Erros: {errors:,} | Velocidade média: {speed:.2f} imagens/s | "
+            f"Tempo decorrido: {self._format_duration(elapsed)} | "
+            f"Tempo restante estimado: {self._format_duration(remaining)}"
+        )
+        self.analysis_current_var.set(f"Imagem atual: {path}")
+
+    def pause_analysis(self):
+        if self.analysis_run_event is None:
+            return
+        self.analysis_run_event.clear()
+        self.analysis_pause_button.configure(state="disabled")
+        self.analysis_continue_button.configure(state="normal")
+        self.analysis_status_var.set(
+            "Pausa solicitada. A imagem atual será finalizada e salva primeiro."
+        )
+
+    def continue_analysis(self):
+        if self.analysis_run_event is None:
+            return
+        self.analysis_run_event.set()
+        self.analysis_pause_button.configure(state="normal")
+        self.analysis_continue_button.configure(state="disabled")
+        self.analysis_status_var.set("Continuando a análise...")
+
+    def cancel_analysis(self):
+        if self.analysis_cancel_event is None:
+            return
+        self.analysis_cancel_event.set()
+        if self.analysis_run_event:
+            self.analysis_run_event.set()
+        self.analysis_pause_button.configure(state="disabled")
+        self.analysis_continue_button.configure(state="disabled")
+        self.analysis_cancel_button.configure(state="disabled")
+        self.analysis_status_var.set(
+            "Cancelamento solicitado. A imagem atual será finalizada e salva primeiro."
+        )
+
+    def _analysis_complete(self, result):
+        self.search_engine = None
+        self._mark_semantic_stale()
+        self.analysis_progress.configure(
+            value=(result.completed / result.selected * 100) if result.selected else 0
+        )
+        state = "Cancelado" if result.cancelled else "Concluído"
+        text = (
+            f"{state}: {result.completed:,} processadas; "
+            f"{result.succeeded:,} concluídas; {result.errors:,} com erro; "
+            f"tempo {self._format_duration(result.elapsed_seconds)}."
+        )
+        self.analysis_status_var.set(text)
+        self._finish_analysis_controls()
+        self._refresh_catalog_statistics()
+        messagebox.showinfo("Análise com IA", text)
+
+    def _analysis_failed(self, message):
+        self.analysis_status_var.set(f"Não foi possível continuar: {message}")
+        self._finish_analysis_controls()
+        messagebox.showerror("Erro na análise com IA", message)
+
+    def _finish_analysis_controls(self):
+        self.analysis_run_event = None
+        self.analysis_cancel_event = None
+        self.analysis_pause_button.configure(state="disabled")
+        self.analysis_continue_button.configure(state="disabled")
+        self.analysis_cancel_button.configure(state="disabled")
         self._set_busy(False)
 
     def start_processing(self):
@@ -895,6 +1947,12 @@ class App:
         state = "disabled" if busy else "normal"
         self.index_button.configure(state=state)
         self.incremental_index_button.configure(state=state)
+        self.analysis_button.configure(state=state)
+        self.semantic_update_button.configure(state=state)
+        self.semantic_rebuild_button.configure(state=state)
+        self.visual_find_button.configure(state=state)
+        self.visual_update_button.configure(state=state)
+        self.visual_rebuild_button.configure(state=state)
         self.process_button.configure(state=state)
         self.add_source_button.configure(state=state)
         self.remove_source_button.configure(state=state)

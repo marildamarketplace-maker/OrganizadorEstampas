@@ -1,8 +1,9 @@
-#!/bin/zsh
+#!/bin/bash
 
 set -euo pipefail
 
-RAIZ_PROJETO="${0:A:h:h}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+RAIZ_PROJETO="$(cd "$SCRIPT_DIR/.." && pwd)"
 CAIXA_ENTRADA="$RAIZ_PROJETO/pedidos_pdf/entrada"
 RELATORIOS="$RAIZ_PROJETO/pedidos_pdf/relatorios"
 CONTROLE="$RAIZ_PROJETO/pedidos_pdf/.controle"
@@ -18,10 +19,8 @@ trap 'rmdir "$TRAVA" 2>/dev/null || true' EXIT INT TERM
 
 if command -v codex >/dev/null 2>&1; then
   CODEX_BIN="$(command -v codex)"
-elif [[ -x "/Applications/ChatGPT.app/Contents/Resources/codex" ]]; then
-  CODEX_BIN="/Applications/ChatGPT.app/Contents/Resources/codex"
 else
-  echo "Codex nao encontrado. Instale/abra o aplicativo Codex e tente novamente."
+  echo "Codex nao encontrado no PATH. Instale o comando codex e tente novamente."
   exit 1
 fi
 
@@ -37,4 +36,3 @@ echo "Iniciando processamento dos PDFs novos..."
 "$PYTHON_BIN" "$RAIZ_PROJETO/meury_app/batch_order_processor.py" \
   --projeto "$RAIZ_PROJETO" \
   --codex "$CODEX_BIN"
-

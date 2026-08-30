@@ -2,16 +2,17 @@ from __future__ import annotations
 
 from pathlib import Path
 import os
-import platform
-import subprocess
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from .art_search import ArtSearchEngine, SearchResult, ThumbnailCache, principal_keywords
-from .config import APP_NAME, load_config, save_config
+from .config import (
+    APP_DIR, APP_NAME, load_config, original_images_path, save_config,
+    select_app_data_dir, validate_original_images_path,
+)
 from .analysis_batch import run_analysis_batch
-from .catalog_diagnostics import load_catalog_statistics
+from .catalog_diagnostics import load_catalog_statistics, load_category_records
 from .image_collector import collect_images, format_size
 from .image_analyzer import LocalImageAnalyzer
 from .indexer import (
@@ -19,6 +20,12 @@ from .indexer import (
     index_catalog_available, update_index_incremental,
 )
 from .processor import process_csv_text, process_excel
+from .platform_utils import open_with_default_application
+from .preview_generator import generate_pending_previews
+from .cloud_preview import upload_pending_previews
+from .supabase_sync import sync_pending_records
+from .pending_sync import synchronize_pending
+from .original_folder import OriginalFolderError, open_original_directory
 from .semantic_search import (
     SemanticSearchIndex, merge_hybrid_results, record_identity,
     semantic_index_status,
@@ -54,7 +61,18 @@ class App:
             value=self.config.get("input_mode", "excel")
         )
         self.source_dirs = list(self.config.get("source_dirs", []))
+        self.root_path_error = ""
+        try:
+            configured_root = original_images_path(self.config)
+            self.source_dirs = [str(configured_root)]
+            validate_original_images_path(self.config)
+        except ValueError as exc:
+            if self.config.get("original_images_path") or os.environ.get("ORIGINAL_IMAGES_PATH"):
+                self.root_path_error = str(exc)
+        except PermissionError as exc:
+            self.root_path_error = str(exc)
         self.output_var = tk.StringVar(value=self.config.get("output_dir", ""))
+        self.app_data_dir_var = tk.StringVar(value=str(APP_DIR))
         self.collector_source_dirs = list(
             self.config.get("collector_source_dirs", [])
         )
@@ -92,10 +110,16 @@ class App:
 
         self._build_style()
         self._build_ui()
-        self._try_load_saved_index()
+        if self.root_path_error:
+            self.index_status_var.set(self.root_path_error)
+            message = self.root_path_error
+            self.root.after_idle(self._show_root_path_error, message)
+        else:
+            self._try_load_saved_index()
         self._refresh_semantic_status()
         self._refresh_visual_status()
-        self._refresh_catalog_statistics()
+        if not self.root_path_error:
+            self._refresh_catalog_statistics()
 
     def _build_style(self):
         style = ttk.Style()
@@ -105,6 +129,17 @@ class App:
         style.configure("Subtitle.TLabel", font=("Arial", 10))
         style.configure("Primary.TButton", font=("Arial", 11, "bold"), padding=10)
         style.configure("Secondary.TButton", padding=8)
+
+    def _show_root_path_error(self, message):
+        """Mostra o erro apenas enquanto a janela principal ainda existe."""
+        try:
+            if self.root.winfo_exists():
+                messagebox.showerror(
+                    "Diretório raiz indisponível", message, parent=self.root
+                )
+        except tk.TclError:
+            # A janela pode ter sido fechada antes da execução do after_idle.
+            return
 
     def _build_ui(self):
         main = ttk.Frame(self.root, padding=24)
@@ -209,7 +244,11 @@ class App:
         self._csv_text_row(form, 2)
         self._source_paths_row(form, 3)
         self._path_row(
-            form, 4, "Pasta de saída dos pedidos", self.output_var,
+            form, 4, "Pasta de dados/configurações", self.app_data_dir_var,
+            "Alterar pasta", self.select_app_data_dir
+        )
+        self._path_row(
+            form, 5, "Pasta de saída dos pedidos", self.output_var,
             "Selecionar saída", self.select_output
         )
 
@@ -217,22 +256,50 @@ class App:
         index_frame.pack(fill="x", pady=16)
 
         ttk.Label(index_frame, textvariable=self.index_status_var).pack(anchor="w")
+        ttk.Label(
+            index_frame,
+            text="Atualização local: verifica as pastas e atualiza o catálogo. "
+                 "Não gera previews, não envia arquivos e não usa IA.",
+            style="Subtitle.TLabel", wraplength=820,
+        ).pack(anchor="w", pady=(5, 0))
         button_line = ttk.Frame(index_frame)
         button_line.pack(fill="x", pady=(10, 0))
         self.index_button = ttk.Button(
-            button_line, text="Atualizar índice completo", command=self.start_indexing,
-            style="Secondary.TButton"
+            button_line, text="ATUALIZAR ÍNDICE", command=self.start_local_indexing,
+            style="Primary.TButton"
         )
         self.index_button.pack(side="left")
+        self.pending_sync_button = ttk.Button(
+            button_line, text="Sincronizar pendentes",
+            command=self.start_pending_sync, style="Primary.TButton",
+        )
+        self.pending_sync_button.pack(side="left", padx=(8, 0))
+        secondary_line = ttk.Frame(index_frame)
+        secondary_line.pack(fill="x", pady=(8, 0))
         self.incremental_index_button = ttk.Button(
-            button_line,
-            text="Adicionar imagens novas",
-            command=self.start_incremental_indexing,
+            secondary_line,
+            text="Reconstruir índice local",
+            command=self.start_indexing,
             style="Secondary.TButton",
         )
         self.incremental_index_button.pack(side="left", padx=(8, 0))
+        self.preview_button = ttk.Button(
+            secondary_line, text="Gerar previews pendentes",
+            command=self.start_preview_generation, style="Secondary.TButton",
+        )
+        self.preview_button.pack(side="left", padx=(8, 0))
+        self.cloud_button = ttk.Button(
+            secondary_line, text="Enviar previews para Cloud",
+            command=self.start_cloud_upload, style="Secondary.TButton",
+        )
+        self.cloud_button.pack(side="left", padx=(8, 0))
+        self.supabase_button = ttk.Button(
+            secondary_line, text="Sincronizar Supabase",
+            command=self.start_supabase_sync, style="Secondary.TButton",
+        )
+        self.supabase_button.pack(side="left", padx=(8, 0))
         ttk.Button(
-            button_line, text="Abrir pasta de configurações",
+            secondary_line, text="Abrir pasta de configurações",
             command=self.open_app_folder, style="Secondary.TButton"
         ).pack(side="left", padx=8)
 
@@ -482,6 +549,24 @@ class App:
         stats = ttk.LabelFrame(main, text="Estatísticas do catálogo", padding=8)
         stats.pack(fill="x", pady=(9, 0))
         ttk.Label(stats, textvariable=self.catalog_stats_var, wraplength=850).pack(anchor="w")
+        self.catalog_stats_buttons = ttk.Frame(stats)
+        self.catalog_stats_buttons.pack(fill="x", pady=(7, 0))
+        self.catalog_category_buttons = {}
+        categories = (
+            ("total", "Total"), ("new", "Novas"), ("changed", "Alteradas"),
+            ("unchanged", "Inalteradas"), ("preview", "Preview pendente"),
+            ("cloud", "Cloud pendente"), ("supabase", "Supabase pendente"),
+            ("synced", "Sincronizadas"), ("missing", "Ausentes"),
+            ("errors", "Com erro"),
+        )
+        for position, (category, label) in enumerate(categories):
+            button = ttk.Button(
+                self.catalog_stats_buttons, text=label,
+                command=lambda key=category, title=label: self.show_catalog_category(key, title),
+            )
+            button.grid(row=position // 5, column=position % 5, sticky="ew", padx=3, pady=3)
+            self.catalog_stats_buttons.columnconfigure(position % 5, weight=1)
+            self.catalog_category_buttons[category] = button
         self.search_status_var = tk.StringVar(
             value="Digite, por exemplo: flores vermelhas, Natal ou xadrez azul."
         )
@@ -573,10 +658,77 @@ class App:
         if generation != self.stats_generation:
             return
         self.catalog_stats_var.set(
-            f"Total de imagens: {result.total:,}   |   Com palavras-chave: "
-            f"{result.with_keywords:,}   |   Sem palavras-chave: {result.without_keywords:,}\n"
-            f"Com embedding: {result.with_embedding:,}   |   Pendentes: "
-            f"{result.pending:,}   |   Erros: {result.errors:,}"
+            f"Total de imagens: {result.total:,}   |   Precisam de processamento: "
+            f"{max(result.pending_preview, result.pending_cloud, result.pending_supabase):,}   |   "
+            f"Ausentes: {result.missing:,}   |   Com erro: {result.errors:,}"
+        )
+        counts = {
+            "total": result.total, "new": result.new, "changed": result.changed,
+            "unchanged": result.unchanged, "preview": result.pending_preview,
+            "cloud": result.pending_cloud, "supabase": result.pending_supabase,
+            "synced": result.synced, "missing": result.missing, "errors": result.errors,
+        }
+        labels = {
+            "total": "Total", "new": "Novas", "changed": "Alteradas",
+            "unchanged": "Inalteradas", "preview": "Preview pendente",
+            "cloud": "Cloud pendente", "supabase": "Supabase pendente",
+            "synced": "Sincronizadas", "missing": "Ausentes", "errors": "Com erro",
+        }
+        for category, count in counts.items():
+            self.catalog_category_buttons[category].configure(
+                text=f"{labels[category]}\n{count:,}"
+            )
+
+    def show_catalog_category(self, category, title):
+        if not self.source_dirs:
+            return
+
+        def worker():
+            try:
+                records = load_category_records(
+                    [Path(source) for source in self.source_dirs], category, limit=500
+                )
+                self.root.after(0, self._show_catalog_category_dialog, title, records)
+            except Exception as exc:
+                self.root.after(0, messagebox.showerror, "Detalhes do catálogo", str(exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_catalog_category_dialog(self, title, records):
+        dialog = tk.Toplevel(self.root)
+        dialog.title(title)
+        dialog.geometry("820x480")
+        body = ttk.Frame(dialog, padding=12)
+        body.pack(fill="both", expand=True)
+        ttk.Label(
+            body,
+            text=f"{len(records):,} arquivo(s) exibido(s). Limite da lista: 500.",
+        ).pack(anchor="w", pady=(0, 8))
+        list_frame = ttk.Frame(body)
+        list_frame.pack(fill="both", expand=True)
+        items = tk.Listbox(list_frame)
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=items.yview)
+        items.configure(yscrollcommand=scrollbar.set)
+        items.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        for record in records:
+            reason = record.get("attention_reason") or record.get("last_error") or ""
+            suffix = f"  —  {reason}" if reason else ""
+            items.insert("end", f"{record.get('path', '')}{suffix}")
+
+        def open_selected(_event=None):
+            selection = items.curselection()
+            if not selection:
+                return
+            path = Path(records[selection[0]].get("path", ""))
+            if path.is_file():
+                self._open_file(path)
+            elif path.parent.is_dir():
+                self._open_directory(path.parent)
+
+        items.bind("<Double-Button-1>", open_selected)
+        ttk.Button(body, text="Abrir selecionado", command=open_selected).pack(
+            anchor="e", pady=(8, 0)
         )
 
     def _semantic_option_changed(self):
@@ -839,6 +991,11 @@ class App:
     def show_art_context_menu(self, event, record):
         menu = tk.Menu(self.root, tearoff=False)
         menu.add_command(
+            label="Abrir pasta original",
+            command=lambda: self.open_original_folder(record),
+        )
+        menu.add_separator()
+        menu.add_command(
             label="Encontrar semelhantes",
             command=lambda: self.find_similar_images(record.get("path", ""), record),
         )
@@ -1058,7 +1215,8 @@ class App:
             actions, text="Abrir imagem", command=lambda: self._open_file(Path(path))
         ).pack(side="left")
         ttk.Button(
-            actions, text="Abrir pasta", command=lambda: self._open_directory(Path(path).parent)
+            actions, text="Abrir pasta original",
+            command=lambda: self.open_original_folder(record),
         ).pack(side="left", padx=6)
         ttk.Button(
             actions, text="Copiar caminho", command=lambda: self._copy_text(path)
@@ -1146,25 +1304,19 @@ class App:
         if not path.is_file():
             messagebox.showerror("Arquivo indisponível", f"O arquivo não foi encontrado:\n{path}")
             return
-        system = platform.system()
-        if system == "Windows":
-            os.startfile(path)  # type: ignore[attr-defined]
-        elif system == "Darwin":
-            subprocess.run(["open", str(path)], check=False)
-        else:
-            subprocess.run(["xdg-open", str(path)], check=False)
+        open_with_default_application(path)
 
     def _open_directory(self, path: Path):
         if not path.is_dir():
             messagebox.showerror("Pasta indisponível", f"A pasta não foi encontrada:\n{path}")
             return
-        system = platform.system()
-        if system == "Windows":
-            os.startfile(path)  # type: ignore[attr-defined]
-        elif system == "Darwin":
-            subprocess.run(["open", str(path)], check=False)
-        else:
-            subprocess.run(["xdg-open", str(path)], check=False)
+        open_with_default_application(path)
+
+    def open_original_folder(self, record):
+        try:
+            open_original_directory(record, self.config)
+        except OriginalFolderError as exc:
+            messagebox.showerror("Pasta original indisponível", str(exc))
 
     def _path_row(self, parent, row, label, variable, button_text, command):
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=7)
@@ -1177,7 +1329,7 @@ class App:
         parent.columnconfigure(1, weight=1)
 
     def _source_paths_row(self, parent, row):
-        ttk.Label(parent, text="Pastas de entrada das estampas").grid(
+        ttk.Label(parent, text="Diretório raiz das estampas").grid(
             row=row, column=0, sticky="nw", pady=7
         )
         list_frame = ttk.Frame(parent)
@@ -1198,7 +1350,7 @@ class App:
         button_frame = ttk.Frame(parent)
         button_frame.grid(row=row, column=2, sticky="n", pady=7)
         self.add_source_button = ttk.Button(
-            button_frame, text="Adicionar entrada", command=self.select_source
+            button_frame, text="Selecionar raiz", command=self.select_source
         )
         self.add_source_button.pack(fill="x")
         self.remove_source_button = ttk.Button(
@@ -1256,9 +1408,11 @@ class App:
             self._save_paths()
 
     def select_source(self):
-        path = filedialog.askdirectory(title="Adicione uma pasta de estampas")
-        if path and path not in self.source_dirs:
-            self.source_dirs.append(path)
+        path = filedialog.askdirectory(title="Selecione o diretório raiz das estampas")
+        if path:
+            self.source_dirs = [path]
+            self.config["original_images_path"] = path
+            self.root_path_error = ""
             self._refresh_source_list()
             self._save_paths()
             self.index = {}
@@ -1275,6 +1429,8 @@ class App:
             return
         for index in reversed(selected):
             del self.source_dirs[index]
+        if not self.source_dirs:
+            self.config["original_images_path"] = ""
         self._refresh_source_list()
         self._save_paths()
         self.index = {}
@@ -1309,6 +1465,28 @@ class App:
             self.output_var.set(path)
             self._save_paths()
 
+    def select_app_data_dir(self):
+        path = filedialog.askdirectory(
+            title="Selecione uma pasta vazia para os dados do software",
+            parent=self.root,
+        )
+        if not path:
+            return
+        try:
+            destination = select_app_data_dir(path)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror(
+                "Não foi possível alterar a pasta", str(exc), parent=self.root
+            )
+            return
+        self.app_data_dir_var.set(str(destination))
+        messagebox.showinfo(
+            "Pasta de dados alterada",
+            "Os dados atuais foram copiados com segurança. Feche e abra novamente "
+            "o aplicativo para concluir a troca.",
+            parent=self.root,
+        )
+
     def select_collector_output(self):
         path = filedialog.askdirectory(
             title="Selecione a pasta de saída das imagens"
@@ -1318,10 +1496,14 @@ class App:
             self._save_paths()
 
     def _save_paths(self):
-        save_config({
+        updated_config = {
             "excel_path": self.excel_var.get(),
             "input_mode": self.input_mode_var.get(),
             "source_dirs": self.source_dirs,
+            "original_images_path": (
+                self.source_dirs[0] if self.source_dirs
+                else self.config.get("original_images_path", "")
+            ),
             "output_dir": self.output_var.get(),
             "collector_source_dirs": self.collector_source_dirs,
             "collector_output_dir": self.collector_output_var.get(),
@@ -1331,7 +1513,11 @@ class App:
                 if variable.get()
             ],
             "semantic_search_enabled": self.semantic_enabled_var.get(),
-        })
+        }
+        save_config(updated_config)
+        # Todas as ações abertas nesta sessão passam a enxergar imediatamente a
+        # mesma raiz que acabou de ser escolhida, sem exigir reinicialização.
+        self.config.update(updated_config)
 
     def _try_load_saved_index(self):
         sources = [Path(source) for source in self.source_dirs]
@@ -1366,6 +1552,179 @@ class App:
             daemon=True
         )
         thread.start()
+
+    def start_local_indexing(self):
+        """Executa somente o scan local, incremental sempre que possível."""
+        sources = [Path(source) for source in self.source_dirs]
+        if sources and index_catalog_available(sources):
+            self.start_incremental_indexing()
+        else:
+            self.start_indexing()
+
+    def start_preview_generation(self):
+        sources = [Path(source) for source in self.source_dirs]
+        if not sources:
+            messagebox.showwarning("Previews", "Adicione e indexe as pastas primeiro.")
+            return
+        self._set_busy(True)
+        self.progress.configure(mode="determinate", value=0)
+        self.status_var.set("Gerando previews locais pendentes...")
+        threading.Thread(
+            target=self._preview_generation_worker, args=(sources,), daemon=True,
+        ).start()
+
+    def _preview_generation_worker(self, sources):
+        try:
+            result = generate_pending_previews(
+                sources,
+                progress_callback=lambda current, total, message: self.root.after(
+                    0, self._preview_generation_progress, current, total, message
+                ),
+            )
+            self.root.after(0, self._preview_generation_complete, result)
+        except Exception as exc:
+            self.root.after(0, self._show_error, str(exc))
+
+    def _preview_generation_progress(self, current, total, message):
+        self.progress.configure(value=(current / total * 100) if total else 0)
+        self.status_var.set(message)
+
+    def _preview_generation_complete(self, result):
+        self.progress.configure(value=100 if result.pending else 0)
+        self.status_var.set("Geração local de previews concluída.")
+        self._set_busy(False)
+        self._refresh_catalog_statistics()
+        messagebox.showinfo(
+            "Previews concluídos",
+            f"Pendentes encontradas: {result.pending:,}\n"
+            f"Concluídas: {result.completed:,}\n"
+            f"Falhas: {result.failed:,}",
+        )
+
+    def start_cloud_upload(self):
+        sources = [Path(source) for source in self.source_dirs]
+        if not sources:
+            messagebox.showwarning("Cloud", "Adicione e indexe as pastas primeiro.")
+            return
+        self._set_busy(True)
+        self.progress.configure(mode="determinate", value=0)
+        self.status_var.set("Enviando somente previews concluídos para Cloud...")
+        threading.Thread(
+            target=self._cloud_upload_worker, args=(sources,), daemon=True,
+        ).start()
+
+    def _cloud_upload_worker(self, sources):
+        try:
+            result = upload_pending_previews(
+                sources,
+                progress_callback=lambda current, total, message: self.root.after(
+                    0, self._cloud_upload_progress, current, total, message
+                ),
+            )
+            self.root.after(0, self._cloud_upload_complete, result)
+        except Exception as exc:
+            self.root.after(0, self._show_error, str(exc))
+
+    def _cloud_upload_progress(self, current, total, message):
+        self.progress.configure(value=(current / total * 100) if total else 0)
+        self.status_var.set(message)
+
+    def _cloud_upload_complete(self, result):
+        self.progress.configure(value=100 if result.pending else 0)
+        self.status_var.set("Envio de previews para Cloud concluído.")
+        self._set_busy(False)
+        self._refresh_catalog_statistics()
+        messagebox.showinfo(
+            "Cloud",
+            f"Previews pendentes: {result.pending:,}\n"
+            f"Enviados: {result.completed:,}\n"
+            f"Falhas: {result.failed:,}",
+        )
+
+    def start_supabase_sync(self):
+        sources = [Path(source) for source in self.source_dirs]
+        if not sources:
+            messagebox.showwarning("Supabase", "Adicione e indexe as pastas primeiro.")
+            return
+        self._set_busy(True)
+        self.progress.configure(mode="determinate", value=0)
+        self.status_var.set("Sincronizando o catálogo comercial com Supabase...")
+        threading.Thread(
+            target=self._supabase_sync_worker, args=(sources,), daemon=True,
+        ).start()
+
+    def _supabase_sync_worker(self, sources):
+        try:
+            result = sync_pending_records(
+                sources,
+                progress_callback=lambda current, total, message: self.root.after(
+                    0, self._supabase_sync_progress, current, total, message
+                ),
+            )
+            self.root.after(0, self._supabase_sync_complete, result)
+        except Exception as exc:
+            self.root.after(0, self._show_error, str(exc))
+
+    def _supabase_sync_progress(self, current, total, message):
+        self.progress.configure(value=(current / total * 100) if total else 0)
+        self.status_var.set(message)
+
+    def _supabase_sync_complete(self, result):
+        self.progress.configure(value=100 if result.pending else 0)
+        self.status_var.set("Sincronização com Supabase concluída.")
+        self._set_busy(False)
+        self._refresh_catalog_statistics()
+        messagebox.showinfo(
+            "Supabase",
+            f"Registros pendentes: {result.pending:,}\n"
+            f"Sincronizados: {result.completed:,}\n"
+            f"Falhas: {result.failed:,}",
+        )
+
+    def start_pending_sync(self):
+        sources = [Path(source) for source in self.source_dirs]
+        if not sources:
+            messagebox.showwarning(
+                "Sincronizar pendentes", "Adicione e indexe as pastas primeiro."
+            )
+            return
+        self._set_busy(True)
+        self.progress.configure(mode="determinate", value=0)
+        self.status_var.set("Buscando itens pendentes...")
+        threading.Thread(
+            target=self._pending_sync_worker, args=(sources,), daemon=True,
+        ).start()
+
+    def _pending_sync_worker(self, sources):
+        try:
+            result = synchronize_pending(
+                sources,
+                progress_callback=lambda current, total, message: self.root.after(
+                    0, self._pending_sync_progress, current, total, message
+                ),
+            )
+            self.root.after(0, self._pending_sync_complete, result)
+        except Exception as exc:
+            self.root.after(0, self._show_error, str(exc))
+
+    def _pending_sync_progress(self, current, total, message):
+        self.progress.configure(value=(current / total * 100) if total else 0)
+        self.status_var.set(message)
+
+    def _pending_sync_complete(self, result):
+        self.progress.configure(value=100 if not result.pending else 0)
+        self.status_var.set("Sincronização de pendentes concluída.")
+        self._set_busy(False)
+        self._refresh_catalog_statistics()
+        messagebox.showinfo(
+            "Sincronizar pendentes",
+            f"Concluídos: {result.completed:,}\n"
+            f"Pendentes: {result.pending:,}\n"
+            f"Erros: {result.errors:,}\n\n"
+            f"Previews: {result.previews_completed:,}\n"
+            f"Cloud: {result.uploads_completed:,}\n"
+            f"Supabase: {result.supabase_completed:,}",
+        )
 
     def _index_worker(self, sources):
         try:
@@ -1425,8 +1784,8 @@ class App:
         self._set_busy(True)
         self.progress.configure(mode="indeterminate")
         self.progress.start(10)
-        self.status_var.set("Procurando imagens novas. Aguarde a conclusão.")
-        self._log("Iniciando atualização rápida do índice...")
+        self.status_var.set("Verificando o catálogo local. Aguarde a conclusão.")
+        self._log("Iniciando scan local incremental...")
         thread = threading.Thread(
             target=self._incremental_index_worker,
             args=(sources,),
@@ -1460,25 +1819,31 @@ class App:
         self.status_var.set("Atualização rápida concluída.")
         self._log(
             f"Atualização rápida concluída em {result.elapsed_seconds:.1f}s. "
-            f"Imagens verificadas: {result.scanned_files:,}. "
+            f"Total encontrado: {result.total_found:,}. "
+            f"Inalteradas: {result.unchanged_files:,}. "
             f"Novas: {result.added_files:,}. Alteradas: {result.changed_files:,}. "
             f"Movidas/renomeadas: {result.moved_files:,}. "
-            f"Removidas: {result.removed_files:,}. "
+            f"Revisão necessária: {result.review_files:,}. "
+            f"Ausentes: {result.absent_files:,}. Erros: {result.errors:,}. "
             f"Duplicados: {result.duplicates:,}."
         )
         if result.duplicates_log:
             self._log(f"Log de duplicidades: {result.duplicates_log}")
         alert = (
+            f"Total encontrado: {result.total_found:,}\n"
+            f"Inalteradas: {result.unchanged_files:,}\n"
             f"Imagens novas adicionadas: {result.added_files:,}\n"
             f"Alteradas: {result.changed_files:,}\n"
             f"Movidas ou renomeadas: {result.moved_files:,}\n"
-            f"Removidas: {result.removed_files:,}\n"
+            f"Revisão necessária: {result.review_files:,}\n"
+            f"Ausentes: {result.absent_files:,}\n"
+            f"Erros: {result.errors:,}\n"
             f"Duplicidades no índice: {result.duplicates:,}\n\n"
             "Os dados já associados às imagens foram preservados."
         )
         if result.duplicates_log:
             alert += f"\n\nLog de duplicidades:\n{result.duplicates_log}"
-        messagebox.showinfo("Imagens novas adicionadas", alert)
+        messagebox.showinfo("Atualização local concluída", alert)
         self._set_busy(False)
         self._refresh_catalog_statistics()
 
@@ -1947,6 +2312,10 @@ class App:
         state = "disabled" if busy else "normal"
         self.index_button.configure(state=state)
         self.incremental_index_button.configure(state=state)
+        self.preview_button.configure(state=state)
+        self.cloud_button.configure(state=state)
+        self.supabase_button.configure(state=state)
+        self.pending_sync_button.configure(state=state)
         self.analysis_button.configure(state=state)
         self.semantic_update_button.configure(state=state)
         self.semantic_rebuild_button.configure(state=state)
@@ -1992,14 +2361,9 @@ class App:
         self._open_path(APP_DIR)
 
     def _open_path(self, path: Path):
-        path.mkdir(parents=True, exist_ok=True)
-        system = platform.system()
-        if system == "Windows":
-            os.startfile(path)  # type: ignore[attr-defined]
-        elif system == "Darwin":
-            subprocess.run(["open", str(path)], check=False)
-        else:
-            subprocess.run(["xdg-open", str(path)], check=False)
+        resolved = path.expanduser().resolve()
+        resolved.mkdir(parents=True, exist_ok=True)
+        open_with_default_application(resolved)
 
     def run(self):
         self.root.mainloop()

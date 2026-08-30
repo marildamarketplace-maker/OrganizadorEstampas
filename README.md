@@ -1,5 +1,96 @@
 # Organizador de Estampas — Meury Shop
 
+## Fluxo atual do indexador e sincronizador
+
+O fluxo operacional principal termina ao publicar a estampa com
+`processing_status=PENDING` no Supabase:
+
+```text
+Diretório raiz → Atualizar índice (scan local) → SQLite
+→ Sincronizar pendentes → preview derivado → Cloud → UPSERT Supabase
+```
+
+**Atualizar índice** faz somente o scan local incremental. **Sincronizar
+pendentes** gera apenas previews ausentes, envia apenas versões ainda não
+publicadas e executa UPSERT apenas dos registros pendentes ou alterados. Repetir
+qualquer uma dessas ações é seguro e não duplica uploads ou registros.
+
+As imagens originais são abertas somente para leitura. Previews ficam em
+`~/.meury_organizador_estampas/previews`; nenhuma etapa do fluxo modifica, converte,
+move, comprime, sobrescreve ou exclui automaticamente uma imagem original.
+
+A pasta de dados pode ser alterada em **Organizar pedidos → Pasta de
+dados/configurações**. O aplicativo copia a configuração, o SQLite, os índices e
+os previews para uma pasta vazia e conclui a troca após ser reiniciado. Como
+alternativa administrada, defina `MEURY_APP_DATA_PATH` no `.env`.
+
+### Configuração obrigatória
+
+Defina as variáveis no arquivo `.env` na raiz do projeto (ou no ambiente que
+inicia o aplicativo). O `.env` é carregado automaticamente no Windows e macOS,
+sem substituir variáveis já definidas pelo sistema. O diretório raiz também pode
+ser escolhido na interface e fica salvo na configuração local.
+
+```text
+ORIGINAL_IMAGES_PATH=/Volumes/Estampas
+
+CLOUD_BUCKET=nome-do-bucket
+CLOUD_ACCESS_KEY_ID=...
+CLOUD_SECRET_ACCESS_KEY=...
+CLOUD_PUBLIC_BASE_URL=https://cdn.exemplo.com
+CLOUD_ENDPOINT_URL=https://endpoint-s3-opcional
+CLOUD_REGION=us-east-1
+
+# Alternativa recomendada ao bloco CLOUD_* acima:
+GOOGLE_CLOUD_STORAGE_BUCKET=nome-do-bucket
+GOOGLE_CLOUD_CLIENT_EMAIL=indexador@projeto.iam.gserviceaccount.com
+GOOGLE_CLOUD_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n
+GOOGLE_CLOUD_PROJECT_ID=projeto
+GOOGLE_CLOUD_PUBLIC_BASE_URL=https://storage.googleapis.com/nome-do-bucket
+
+SUPABASE_URL=https://projeto.supabase.co
+SUPABASE_KEY=chave-restrita-do-indexador
+SUPABASE_TABLE=estampas
+```
+
+Quando qualquer variável `GOOGLE_CLOUD_*` de autenticação estiver presente, o
+aplicativo seleciona GCS e valida o conjunto completo. `GOOGLE_CLOUD_PROJECT_ID`
+pode ser inferido de um e-mail padrão de service account. A URL pública é opcional
+e assume `https://storage.googleapis.com/BUCKET`; em bucket privado, configure uma
+CDN pública ou faça o sistema consumidor gerar URLs assinadas.
+
+No Windows, `ORIGINAL_IMAGES_PATH` pode ser, por exemplo, `D:\ESTAMPAS`. No
+macOS, pode ser `/Volumes/Estampas`. O catálogo JSONL, o SQLite e o Supabase
+guardam caminhos relativos como `6844/A/6844-A.tif`.
+
+Antes da primeira sincronização, execute em ordem as migrações da pasta
+`supabase/migrations`. Não distribua uma chave `service_role` em instaladores ou
+computadores sem controle administrativo; prefira uma credencial restrita ao
+UPSERT dos campos pertencentes ao indexador.
+
+Cada arquivo possui identidade remota `codigo + variante + arquivo_id`. O
+`arquivo_id` inclui o caminho relativo, permitindo nomes iguais em pastas
+diferentes. Assim,
+arquivos como `6236-a-1`, `6236-a-modelo` e `6236-a-mockup` são enviados sem
+colisão. Seus previews usam chaves GCS distintas no formato
+`estampas/6236/A/6236-a-1-<hash-curto>/preview.webp`.
+
+### Teste local do núcleo
+
+```bash
+python -m compileall -q app.py meury_app tests
+python -W error::ResourceWarning -m unittest discover -s tests
+```
+
+O projeto ainda contém telas legadas de pedidos, IA e pesquisa local. Elas não são
+chamadas por **Atualizar índice** nem por **Sincronizar pendentes**; o pipeline de
+sincronização descrito acima termina no Supabase.
+
+Os builds padrão são operacionais e não empacotam Torch/Transformers nem os
+modelos de busca visual, pois a IA pertence ao sistema externo. O código legado
+permanece disponível ao executar pelo ambiente de desenvolvimento com as
+dependências opcionais de `requirements-visual.txt`.
+
 ## Inicialização e recursos opcionais
 
 Use `executar_windows.bat` no Windows ou `executar_macos.command` no macOS. Os
@@ -116,8 +207,7 @@ para HNSW/IVF pode ser feita sem mudar o catálogo JSONL.
 
 ## Estrutura esperada das estampas
 
-É possível adicionar uma ou várias pastas de entrada. Cada pasta pode ter quantas
-subpastas forem necessárias:
+Selecione um diretório raiz. Ele pode ter quantas subpastas forem necessárias:
 
 ```text
 Estampas/
@@ -331,14 +421,14 @@ Ajustes do Sistema > Privacidade e Segurança > Abrir Mesmo Assim
 
 1. Escolha `Planilha Excel` e clique em `Selecionar Excel`, ou escolha `Texto CSV`
    e cole os pedidos.
-2. Clique em `Adicionar entrada` para cada pasta onde existam estampas.
-   Use `Remover selecionada` para retirar uma pasta da lista.
+2. Clique em `Selecionar raiz` e escolha o diretório raiz das estampas.
 3. Escolha a pasta de saída.
-4. Na primeira vez, clique em `Atualizar índice completo`. Depois, use `Adicionar
-   imagens novas` para atualizações incrementais. O catálogo também identifica
-   arquivos alterados, removidos, movidos ou renomeados.
-5. Após concluir, clique em `GERAR PASTAS DOS PEDIDOS`.
-6. Confira o relatório criado na pasta de saída.
+4. Clique em `ATUALIZAR ÍNDICE`. A mesma ação faz scans incrementais posteriores e
+   identifica arquivos novos, alterados, ausentes, movidos ou renomeados.
+5. Clique em `Sincronizar pendentes` para gerar previews, publicar na Cloud e fazer
+   UPSERT no Supabase.
+6. Se usar o módulo legado de pedidos, clique em `GERAR PASTAS DOS PEDIDOS`.
+7. Confira o relatório criado na pasta de saída.
 
 Ao concluir, o log também lista cada imagem não encontrada, incluindo a linha da
 planilha, o pedido, o cliente e o caminho pesquisado.

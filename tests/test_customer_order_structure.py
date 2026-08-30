@@ -79,7 +79,12 @@ class CustomerOrderStructureTest(unittest.TestCase):
                 duplicate.write_bytes(b"duplicada")
 
                 index, result = update_index_incremental(source)
-                same_index, second_result = update_index_incremental(source)
+                with patch.object(
+                    indexer_module, "_make_record", wraps=indexer_module._make_record
+                ) as make_record, patch.object(
+                    indexer_module, "_write_catalog", wraps=indexer_module._write_catalog
+                ) as write_catalog:
+                    same_index, second_result = update_index_incremental(source)
 
             self.assertEqual(result.added_files, 2)
             self.assertEqual(result.scanned_files, 3)
@@ -90,6 +95,13 @@ class CustomerOrderStructureTest(unittest.TestCase):
             )
             self.assertEqual(len(index[image_key("6162", "6162-A")]), 2)
             self.assertEqual(second_result.added_files, 0)
+            self.assertEqual(second_result.unchanged_files, 3)
+            self.assertEqual(second_result.verification_files, 0)
+            self.assertEqual(make_record.call_count, 0)
+            self.assertEqual(write_catalog.call_count, 0)
+            self.assertEqual(second_result.total_found, 3)
+            self.assertEqual(second_result.absent_files, 0)
+            self.assertEqual(second_result.errors, 0)
             self.assertEqual(same_index, index)
 
     def test_incremental_index_requires_an_existing_complete_index(self):

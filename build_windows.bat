@@ -17,13 +17,19 @@ if not exist "%VENV_PY%" (
     exit /b 1
 )
 
-"%VENV_PY%" -m pip install --upgrade pip
-if errorlevel 1 goto :erro
-"%VENV_PY%" -m pip install -r requirements.txt
+"%VENV_PY%" -m meury_app.dependency_setup core
 if errorlevel 1 goto :erro
 "%VENV_PY%" -m PyInstaller --noconfirm --clean --windowed ^
-    --collect-all faiss ^
-    --collect-all openai ^
+    --hidden-import faiss ^
+    --hidden-import openai ^
+    --hidden-import google.cloud.storage ^
+    --hidden-import google.oauth2.service_account ^
+    --exclude-module torch ^
+    --exclude-module torchvision ^
+    --exclude-module transformers ^
+    --exclude-module scipy ^
+    --exclude-module sklearn ^
+    --exclude-module av ^
     --name "OrganizadorEstampasMeury" app.py
 if errorlevel 1 goto :erro
 echo.

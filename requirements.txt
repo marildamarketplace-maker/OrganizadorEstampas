@@ -4,3 +4,6 @@ Pillow>=10.4,<13
 openai>=2.0,<3
 faiss-cpu>=1.12,<2
 numpy>=1.26,<3
+boto3>=1.35,<2
+google-cloud-storage>=2.18,<4
+python-dotenv>=1.0,<2

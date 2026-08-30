@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 import json
+import hashlib
 import os
 import tempfile
 import time
@@ -12,16 +13,47 @@ from .config import (
     ANALYSIS_RESULTS_FILE,
     DUPLICATES_LOG_FILE,
     INDEX_FILE,
+    IMAGE_LIKE_EXTENSIONS,
     LEGACY_INDEX_FILE,
+    OPERATIONAL_DB_FILE,
     SUPPORTED_EXTENSIONS,
     ensure_app_dir,
+    resolve_record_path,
+)
+from .asset_identity import relative_asset_identity
+from .operational_store import (
+    overlay_records, record_quarantine_issues, record_scan_summary, sync_records,
 )
 
 
-INDEX_VERSION = 7
+INDEX_VERSION = 9
+COMPATIBLE_INDEX_VERSIONS = {7, 8, INDEX_VERSION}
 STRUCTURAL_FIELDS = {
     "type", "source", "relative_path", "path", "filename", "design_id", "key",
+    "asset_id",
     "size", "mtime_ns", "active", "missing_since", "analysis_stale",
+    "codigo", "variante", "content_hash", "indexed", "changed",
+    "preview_status", "preview_path", "cloud_status", "storage_key", "preview_url",
+    "supabase_status", "missing_locally", "last_error", "last_indexed_at",
+    "last_synced_at", "scan_status", "processing_status",
+    "missing_detected_at",
+    "review_required", "review_reason",
+    "attention_status", "attention_reason", "attention_at",
+    "preview_content_hash", "cloud_content_hash", "supabase_content_hash",
+    "preview_attempts", "preview_last_error", "preview_last_attempt_at",
+    "cloud_attempts", "cloud_last_error", "cloud_last_attempt_at",
+    "supabase_attempts", "supabase_last_error", "supabase_last_attempt_at",
+}
+PERSISTED_STATE_FIELDS = {
+    "asset_id", "content_hash", "preview_status", "preview_path", "cloud_status",
+    "storage_key", "preview_url", "supabase_status", "last_error",
+    "last_synced_at", "processing_status", "missing_detected_at",
+    "review_required", "review_reason",
+    "attention_status", "attention_reason", "attention_at",
+    "preview_content_hash", "cloud_content_hash", "supabase_content_hash",
+    "preview_attempts", "preview_last_error", "preview_last_attempt_at",
+    "cloud_attempts", "cloud_last_error", "cloud_last_attempt_at",
+    "supabase_attempts", "supabase_last_error", "supabase_last_attempt_at",
 }
 
 
@@ -48,6 +80,18 @@ class IncrementalIndexResult:
     moved_files: int = 0
     changed_files: int = 0
     unchanged_files: int = 0
+    verification_files: int = 0
+    hashed_files: int = 0
+    errors: int = 0
+    review_files: int = 0
+
+    @property
+    def total_found(self) -> int:
+        return self.scanned_files
+
+    @property
+    def absent_files(self) -> int:
+        return self.removed_files
 
 
 def normalize_key(value: str) -> str:
@@ -90,11 +134,76 @@ def validate_source_dirs(source_dirs: Path | list[Path]) -> list[Path]:
     return sources
 
 
-def _default_metadata() -> dict:
+def _default_analysis_metadata() -> dict:
     return {
         "keywords": [], "description": "", "colors": [], "elements": [],
         "themes": [], "category": "", "processed": False,
     }
+
+
+def variant_from_filename(design_id: str, filename: str) -> str:
+    """Infere a variante sem alterar a chave legada usada pelos pedidos."""
+    stem = Path(filename).stem.strip()
+    if stem.casefold() == design_id.casefold():
+        return "A"
+    prefix = design_id + "-"
+    if not stem.casefold().startswith(prefix.casefold()):
+        return ""
+    remainder = stem[len(prefix):].strip()
+    return remainder.split(maxsplit=1)[0].split("-", 1)[0].upper() if remainder else ""
+
+
+def _state_metadata(
+    *, design_id: str = "", filename: str = "", indexed_at: str = "",
+    scan_status: str = "new",
+) -> dict:
+    return {
+        "codigo": design_id,
+        "variante": variant_from_filename(design_id, filename) if design_id else "",
+        # Reservado para uma etapa futura de hashing; vazio significa "não calculado".
+        "content_hash": "",
+        "indexed": True,
+        "changed": False,
+        "scan_status": scan_status,
+        "processing_status": "pending" if scan_status == "new" else "indexed",
+        "preview_status": "pending",
+        "preview_path": "",
+        "preview_content_hash": "",
+        "cloud_status": "pending",
+        "storage_key": "",
+        "preview_url": "",
+        "cloud_content_hash": "",
+        "supabase_status": "pending",
+        "supabase_content_hash": "",
+        "preview_attempts": 0, "preview_last_error": "", "preview_last_attempt_at": "",
+        "cloud_attempts": 0, "cloud_last_error": "", "cloud_last_attempt_at": "",
+        "supabase_attempts": 0, "supabase_last_error": "", "supabase_last_attempt_at": "",
+        "missing_locally": False,
+        "missing_detected_at": "",
+        "review_required": False,
+        "review_reason": "",
+        "attention_status": "",
+        "attention_reason": "",
+        "attention_at": "",
+        "last_error": "",
+        "last_indexed_at": indexed_at,
+        "last_synced_at": "",
+    }
+
+
+def _ensure_record_defaults(record: dict) -> None:
+    for field, value in _default_analysis_metadata().items():
+        record.setdefault(field, value)
+    state = _state_metadata(
+        design_id=str(record.get("design_id", "")),
+        filename=str(record.get("filename", "")),
+        scan_status="indexed",
+    )
+    for field, value in state.items():
+        record.setdefault(field, value)
+    record.setdefault("active", True)
+    record["missing_locally"] = not bool(record.get("active", True))
+    record.setdefault("asset_id", relative_asset_identity(record))
 
 
 def _record_identity(record: dict) -> tuple[int, str]:
@@ -108,17 +217,26 @@ def _signature(record: dict) -> tuple[int, int]:
     return int(record.get("size", -1)), int(record.get("mtime_ns", -1))
 
 
+def calculate_content_hash(path: Path, block_size: int = 1024 * 1024) -> str:
+    """Calcula SHA-256 em fluxo somente para candidatos novos ou alterados."""
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(block_size), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def _copy_metadata(previous: dict, current: dict) -> None:
     """Preserva campos atuais e futuros que não descrevem o arquivo físico."""
-    defaults = _default_metadata()
+    defaults = _default_analysis_metadata()
     for field, value in previous.items():
-        if field not in STRUCTURAL_FIELDS:
+        if field not in STRUCTURAL_FIELDS or field in PERSISTED_STATE_FIELDS:
             current[field] = value
     for field, value in defaults.items():
         current.setdefault(field, value)
 
 
-def _iter_source_files(source: Path) -> Iterator[Path]:
+def _iter_source_files(source: Path, issue_callback=None) -> Iterator[Path]:
     """Percorre sem seguir links, evitando ciclos e com baixo uso de memória."""
     pending = [source]
     while pending:
@@ -129,34 +247,65 @@ def _iter_source_files(source: Path) -> Iterator[Path]:
                     try:
                         if entry.is_dir(follow_symlinks=False):
                             pending.append(Path(entry.path))
-                        elif (
-                            entry.is_file(follow_symlinks=False)
-                            and Path(entry.name).suffix.casefold() in SUPPORTED_EXTENSIONS
-                        ):
-                            yield Path(entry.path)
-                    except OSError:
+                        elif entry.is_file(follow_symlinks=False):
+                            suffix = Path(entry.name).suffix.casefold()
+                            if suffix in SUPPORTED_EXTENSIONS:
+                                yield Path(entry.path)
+                            elif suffix in IMAGE_LIKE_EXTENSIONS and issue_callback:
+                                issue_callback(
+                                    Path(entry.path), "UNSUPPORTED_FORMAT",
+                                    f"Extensão não suportada: {suffix or '(sem extensão)'}",
+                                )
+                    except OSError as exc:
+                        if issue_callback:
+                            issue_callback(Path(entry.path), "INACCESSIBLE_FILE", str(exc))
                         continue
         except OSError as exc:
             raise OSError(f"Não foi possível ler a pasta de estampas: {directory}") from exc
 
 
-def _make_record(path: Path, source: Path, source_number: int) -> dict | None:
+def _validate_file_content(path: Path) -> tuple[str, str] | None:
+    """Valida somente candidatos novos/alterados, preservando o Fast Scan."""
+    try:
+        if path.suffix.casefold() == ".pdf":
+            with path.open("rb") as stream:
+                if stream.read(5) != b"%PDF-":
+                    return "CORRUPTED_FILE", "O arquivo não possui cabeçalho PDF válido."
+        else:
+            from PIL import Image
+            with Image.open(path) as image:
+                image.verify()
+    except Exception as exc:
+        return "CORRUPTED_FILE", f"{type(exc).__name__}: {exc}"
+    return None
+
+
+def _make_record(
+    path: Path, source: Path, source_number: int, *, stat_result=None,
+) -> dict | None:
     relative = path.relative_to(source)
     if len(relative.parts) < 2:
         return None
-    try:
-        stat = path.stat()
-    except OSError:
-        return None
+    if stat_result is None:
+        try:
+            stat_result = path.stat()
+        except OSError:
+            return None
     design_id = design_id_from_folder(relative.parts[-2])
     record = {
         "type": "image", "source": source_number,
-        "relative_path": relative.as_posix(), "path": str(path.resolve()),
+        "relative_path": relative.as_posix(), "path": os.path.abspath(os.fspath(path)),
         "filename": path.name, "design_id": design_id,
-        "key": image_key(design_id, path.stem), "size": stat.st_size,
-        "mtime_ns": stat.st_mtime_ns, "active": True,
+        "key": image_key(design_id, path.stem), "size": stat_result.st_size,
+        "mtime_ns": stat_result.st_mtime_ns, "active": True,
     }
-    record.update(_default_metadata())
+    record.update(_default_analysis_metadata())
+    record.update(_state_metadata(
+        design_id=design_id,
+        filename=path.name,
+        indexed_at=time.strftime("%Y-%m-%d %H:%M:%S"),
+    ))
+    record["asset_id"] = relative_asset_identity(record)
     return record
 
 
@@ -164,7 +313,10 @@ def _read_jsonl(path: Path) -> tuple[dict, list[dict]] | None:
     try:
         with path.open(encoding="utf-8") as stream:
             header = json.loads(next(stream))
-            if header.get("type") != "catalog" or header.get("version") != INDEX_VERSION:
+            if (
+                header.get("type") != "catalog"
+                or header.get("version") not in COMPATIBLE_INDEX_VERSIONS
+            ):
                 return None
             records = []
             for line in stream:
@@ -172,9 +324,7 @@ def _read_jsonl(path: Path) -> tuple[dict, list[dict]] | None:
                     continue
                 record = json.loads(line)
                 if record.get("type") == "image":
-                    for field, value in _default_metadata().items():
-                        record.setdefault(field, value)
-                    record.setdefault("active", True)
+                    _ensure_record_defaults(record)
                     records.append(record)
             return header, records
     except (OSError, StopIteration, json.JSONDecodeError, TypeError, ValueError):
@@ -241,7 +391,12 @@ def _read_legacy_index() -> tuple[dict, list[dict]] | None:
                     "filename": path.name, "design_id": design_id, "key": key,
                     "size": size, "mtime_ns": mtime_ns, "active": path.exists(),
                 }
-                record.update(_default_metadata())
+                record.update(_default_analysis_metadata())
+                record.update(_state_metadata(
+                    design_id=design_id,
+                    filename=path.name,
+                    indexed_at=time.strftime("%Y-%m-%d %H:%M:%S"),
+                ))
                 records.append(record)
         return {"source_dirs": [str(value) for value in sources]}, records
     except (OSError, json.JSONDecodeError, TypeError, ValueError):
@@ -256,6 +411,7 @@ def _load_catalog(source_dirs: list[Path] | None = None) -> tuple[dict, list[dic
         return None
     header, records = loaded
     _apply_analysis_results(records)
+    overlay_records(_operational_db_path(), records)
     if source_dirs is not None:
         saved_sources = header.get("source_dirs", [])
         # Caminhos relativos permitem troca da letra/unidade do HD. A ordem das
@@ -266,9 +422,15 @@ def _load_catalog(source_dirs: list[Path] | None = None) -> tuple[dict, list[dic
             source_number = int(record.get("source", 0))
             if source_number >= len(source_dirs):
                 return None
-            relative = str(record.get("relative_path", "")).replace("/", os.sep)
-            record["path"] = str((source_dirs[source_number] / relative).resolve())
+            record["path"] = str(resolve_record_path(record, source_dirs))
     return header, records
+
+
+def _operational_db_path() -> Path:
+    """Mantém testes/catálogos alternativos isolados do banco real do usuário."""
+    if INDEX_FILE.parent == OPERATIONAL_DB_FILE.parent:
+        return OPERATIONAL_DB_FILE
+    return INDEX_FILE.with_name(OPERATIONAL_DB_FILE.name)
 
 
 def _index_from_records(records: list[dict]) -> dict[str, list[str]]:
@@ -281,11 +443,14 @@ def _index_from_records(records: list[dict]) -> dict[str, list[str]]:
     return index
 
 
-def _write_catalog(records: list[dict], sources: list[Path]) -> None:
+def _write_catalog(
+    records: list[dict], sources: list[Path], *, operational_records: list[dict] | None = None,
+) -> None:
     ensure_app_dir()
     header = {
         "type": "catalog", "version": INDEX_VERSION,
-        "source_dirs": [str(source) for source in sources],
+        # A raiz física pertence à configuração, nunca à identidade persistida.
+        "source_dirs": [str(number) for number, _source in enumerate(sources)],
         "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
     temporary_name = None
@@ -297,10 +462,16 @@ def _write_catalog(records: list[dict], sources: list[Path]) -> None:
             temporary_name = stream.name
             stream.write(json.dumps(header, ensure_ascii=False) + "\n")
             for record in records:
-                stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+                persisted = dict(record)
+                persisted["path"] = str(record.get("relative_path", "")).replace("\\", "/")
+                stream.write(json.dumps(persisted, ensure_ascii=False) + "\n")
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary_name, INDEX_FILE)
+        sync_records(
+            _operational_db_path(),
+            records if operational_records is None else operational_records,
+        )
         # Os eventos já foram incorporados aos registros escritos acima.
         ANALYSIS_RESULTS_FILE.unlink(missing_ok=True)
     finally:
@@ -374,7 +545,7 @@ def index_catalog_available(source_dirs: Path | list[Path]) -> bool:
             header = json.loads(next(stream))
         return (
             header.get("type") == "catalog"
-            and header.get("version") == INDEX_VERSION
+            and header.get("version") in COMPATIBLE_INDEX_VERSIONS
             and len(header.get("source_dirs", [])) == len(sources)
         )
     except (OSError, StopIteration, json.JSONDecodeError, TypeError):
@@ -383,7 +554,7 @@ def index_catalog_available(source_dirs: Path | list[Path]) -> bool:
 
 def _scan_and_merge(
     sources: list[Path], old_records: list[dict], progress_callback=None,
-) -> tuple[list[dict], dict, int]:
+) -> tuple[list[dict], dict, int, list[dict], list[dict]]:
     """Varre o disco e mescla em fluxo, sem manter dois catálogos completos.
 
     Registros existentes são atualizados no próprio objeto. Assim, uma
@@ -392,38 +563,170 @@ def _scan_and_merge(
     """
     old_by_path = {_record_identity(record): record for record in old_records}
     matched, new_records, removed = [], [], []
+    dirty_records: list[dict] = []
+    quarantine_issues: list[dict] = []
     seen_paths: set[str] = set()
     scanned = 0
-    stats = {"added": 0, "removed": 0, "moved": 0, "changed": 0, "unchanged": 0}
+    stats = {
+        "added": 0, "removed": 0, "moved": 0, "changed": 0,
+        "unchanged": 0, "hashed": 0, "errors": 0, "review": 0,
+    }
+
+    def add_issue(source_number: int, source: Path, path: Path, reason: str, message: str):
+        try:
+            relative = path.relative_to(source).as_posix()
+        except ValueError:
+            relative = path.name
+        quarantine_issues.append({
+            "source": source_number, "relative_path": relative,
+            "filename": path.name, "path": os.path.abspath(os.fspath(path)),
+            "reason": reason, "technical_message": message,
+            "detected_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        })
+        stats["errors"] += 1
+
+    def mark_attention(record: dict, reason: str, message: str):
+        if (
+            record.get("attention_status") == "REQUIRES_ATTENTION"
+            and record.get("attention_reason") == reason
+        ):
+            return False
+        record["attention_status"] = "REQUIRES_ATTENTION"
+        record["attention_reason"] = reason
+        record["attention_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        add_issue(
+            int(record.get("source", 0)), sources[int(record.get("source", 0))],
+            Path(record.get("path", "")), reason, message,
+        )
+        return True
+
     for source_number, source in enumerate(sources):
-        for path in _iter_source_files(source):
-            path_identity = os.path.normcase(str(path.resolve())).casefold()
+        issue_callback = lambda path, reason, message, sn=source_number, root=source: add_issue(
+            sn, root, path, reason, message
+        )
+        for path in _iter_source_files(source, issue_callback):
+            # ``abspath`` é puramente textual. Evita o custo de ``resolve`` e de
+            # consultas extras ao filesystem para cada item de catálogos grandes.
+            absolute_path = os.path.abspath(os.fspath(path))
+            path_identity = os.path.normcase(absolute_path).casefold()
             if path_identity in seen_paths:
                 continue
             seen_paths.add(path_identity)
-            record = _make_record(path, source, source_number)
-            if record is None:
+            try:
+                relative = path.relative_to(source)
+                if len(relative.parts) < 2:
+                    add_issue(
+                        source_number, source, path, "INVALID_PATH",
+                        "O arquivo precisa estar dentro de uma pasta de estampa.",
+                    )
+                    continue
+                stat_result = path.stat()
+            except (OSError, ValueError) as exc:
+                add_issue(source_number, source, path, "INACCESSIBLE_FILE", str(exc))
                 continue
             scanned += 1
-            old = old_by_path.pop(_record_identity(record), None)
+            identity = (source_number, relative.as_posix().casefold())
+            old = old_by_path.pop(identity, None)
+            was_missing = bool(old and (
+                old.get("missing_locally", False) or not old.get("active", True)
+            ))
+            current_signature = (stat_result.st_size, stat_result.st_mtime_ns)
+            if old is not None and _signature(old) == current_signature:
+                # Fast path: não cria outro registro nem toca em hash, preview ou
+                # estados de sincronização quando caminho, tamanho e mtime coincidem.
+                old["path"] = absolute_path
+                old["active"] = True
+                old["missing_locally"] = False
+                old.pop("missing_since", None)
+                if was_missing:
+                    old["scan_status"] = "reappeared"
+                    old["last_indexed_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                    dirty_records.append(old)
+                matched.append(old)
+                stats["unchanged"] += 1
+                if progress_callback and scanned % 250 == 0:
+                    progress_callback(scanned, f"Verificando: {scanned:,} imagens")
+                continue
+
+            record = _make_record(
+                path, source, source_number, stat_result=stat_result,
+            )
+            if record is None:
+                continue
+            if old is None and not record.get("design_id"):
+                mark_attention(record, "CODE_NOT_IDENTIFIED", "Código da estampa vazio.")
+            if old is None and not record.get("variante"):
+                mark_attention(
+                    record, "VARIANT_NOT_IDENTIFIED",
+                    "A variante não pôde ser inferida pelo nome do arquivo.",
+                )
+            validation_error = _validate_file_content(path)
+            if old is None and validation_error:
+                mark_attention(record, validation_error[0], validation_error[1])
             if old is None:
                 new_records.append(record)
             else:
-                old_signature = _signature(old)
+                try:
+                    current_hash = calculate_content_hash(path)
+                    stats["hashed"] += 1
+                except OSError as exc:
+                    old["last_error"] = f"SHA-256: {exc}"
+                    current_hash = ""
+                    mark_attention(record, "INACCESSIBLE_FILE", f"SHA-256: {exc}")
+                previous_hash = str(old.get("content_hash", ""))
                 metadata = {
                     key: value for key, value in old.items()
-                    if key not in STRUCTURAL_FIELDS
+                    if key not in STRUCTURAL_FIELDS or key in PERSISTED_STATE_FIELDS
                 }
-                old.clear()
-                old.update(record)
-                old.update(metadata)
-                if old_signature == _signature(record):
+                record.update(metadata)
+                if not record.get("design_id"):
+                    mark_attention(record, "CODE_NOT_IDENTIFIED", "Código da estampa vazio.")
+                if not record.get("variante"):
+                    mark_attention(
+                        record, "VARIANT_NOT_IDENTIFIED",
+                        "A variante não pôde ser inferida pelo nome do arquivo.",
+                    )
+                if validation_error:
+                    mark_attention(record, validation_error[0], validation_error[1])
+                if previous_hash and current_hash == previous_hash:
+                    # Tamanho ou mtime mudou, mas os bytes continuam idênticos.
+                    record["content_hash"] = current_hash
+                    record["changed"] = False
+                    record["scan_status"] = "unchanged"
+                    record["last_error"] = ""
                     stats["unchanged"] += 1
                 else:
-                    old["processed"] = False
-                    old["analysis_stale"] = True
+                    # Sem hash anterior, a decisão segura é tratar o candidato
+                    # legado como alterado e guardar a assinatura para o próximo scan.
+                    record["processed"] = False
+                    record["analysis_stale"] = True
+                    record["changed"] = True
+                    record["scan_status"] = "changed"
+                    record["processing_status"] = "pending"
+                    record.update({
+                        "content_hash": current_hash,
+                        "preview_status": "pending", "preview_path": "",
+                        "preview_content_hash": "",
+                        "cloud_status": "pending", "storage_key": "",
+                        "preview_url": "", "cloud_content_hash": "",
+                        "supabase_status": "pending",
+                        "supabase_content_hash": "",
+                        "preview_attempts": 0, "preview_last_error": "",
+                        "preview_last_attempt_at": "", "cloud_attempts": 0,
+                        "cloud_last_error": "", "cloud_last_attempt_at": "",
+                        "supabase_attempts": 0, "supabase_last_error": "",
+                        "supabase_last_attempt_at": "",
+                        "last_synced_at": "",
+                    })
+                    if current_hash:
+                        record["last_error"] = ""
                     stats["changed"] += 1
-                matched.append(old)
+                if was_missing:
+                    record["missing_locally"] = False
+                    record["active"] = True
+                    record["scan_status"] = "reappeared"
+                matched.append(record)
+                dirty_records.append(record)
             if progress_callback and scanned % 250 == 0:
                 progress_callback(scanned, f"Verificando: {scanned:,} imagens")
 
@@ -433,46 +736,130 @@ def _scan_and_merge(
         else:
             matched.append(old)
 
-    removed_by_signature: dict[tuple[int, int], list[dict]] = {}
-    new_by_signature: dict[tuple[int, int], list[dict]] = {}
-    for record in removed:
-        removed_by_signature.setdefault(_signature(record), []).append(record)
+    # Novos arquivos recebem hash uma única vez. O movimento automático só é
+    # aceito quando o SHA-256 forma um par inequívoco de 1 origem para 1 destino.
     for record in new_records:
-        new_by_signature.setdefault(_signature(record), []).append(record)
+        try:
+            record["content_hash"] = calculate_content_hash(Path(record["path"]))
+            record["last_error"] = ""
+            stats["hashed"] += 1
+        except OSError as exc:
+            record["last_error"] = f"SHA-256: {exc}"
+            mark_attention(record, "INACCESSIBLE_FILE", f"SHA-256: {exc}")
+
+    removed_by_hash: dict[str, list[dict]] = {}
+    new_by_hash: dict[str, list[dict]] = {}
+    for record in removed:
+        content_hash = str(record.get("content_hash", ""))
+        if content_hash:
+            removed_by_hash.setdefault(content_hash, []).append(record)
+    for record in new_records:
+        content_hash = str(record.get("content_hash", ""))
+        if content_hash:
+            new_by_hash.setdefault(content_hash, []).append(record)
 
     moved_new_ids, moved_old_ids = set(), set()
-    for signature, candidates in new_by_signature.items():
-        previous = removed_by_signature.get(signature, [])
-        if signature != (-1, -1) and len(candidates) == len(previous) == 1:
+    for content_hash, candidates in new_by_hash.items():
+        previous = removed_by_hash.get(content_hash, [])
+        if len(candidates) == len(previous) == 1:
             new, old = candidates[0], previous[0]
+            attention = (
+                new.get("attention_status", ""), new.get("attention_reason", ""),
+                new.get("attention_at", ""), new.get("last_error", ""),
+            )
             _copy_metadata(old, new)
+            if attention[0]:
+                new["attention_status"], new["attention_reason"] = attention[:2]
+                new["attention_at"], new["last_error"] = attention[2:]
+            new["content_hash"] = content_hash
+            new["scan_status"] = "moved"
+            new["review_required"] = False
+            new["review_reason"] = ""
+            old["active"] = False
+            old["missing_locally"] = True
+            old["scan_status"] = "moved_from"
+            dirty_records.append(old)
             matched.append(new)
+            dirty_records.append(new)
             moved_new_ids.add(id(new))
             moved_old_ids.add(id(old))
             stats["moved"] += 1
+        elif previous:
+            reason = (
+                "Mais de um arquivo novo ou ausente possui o mesmo SHA-256; "
+                "o movimento não foi decidido automaticamente."
+            )
+            for record in candidates + previous:
+                record["review_required"] = True
+                record["review_reason"] = reason
+                dirty_records.append(record)
+            stats["review"] += len(candidates) + len(previous)
+
+    # Catálogos legados podem ainda não possuir hash. Uma assinatura física
+    # semelhante é apenas indício e nunca autoriza mesclagem automática.
+    legacy_removed_by_signature: dict[tuple[int, int], list[dict]] = {}
+    for record in removed:
+        if not record.get("content_hash"):
+            legacy_removed_by_signature.setdefault(_signature(record), []).append(record)
+    for record in new_records:
+        if id(record) in moved_new_ids:
+            continue
+        candidates = legacy_removed_by_signature.get(_signature(record), [])
+        if candidates:
+            reason = "Possível movimento de registro legado sem SHA-256; revisão necessária."
+            record["review_required"] = True
+            record["review_reason"] = reason
+            for previous in candidates:
+                previous["review_required"] = True
+                previous["review_reason"] = reason
+                dirty_records.append(previous)
+            stats["review"] += 1 + len(candidates)
 
     for record in new_records:
         if id(record) not in moved_new_ids:
             matched.append(record)
+            dirty_records.append(record)
             stats["added"] += 1
     for record in removed:
         if id(record) not in moved_old_ids:
             record["active"] = False
-            record["missing_since"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            record["missing_locally"] = True
+            record["scan_status"] = "missing"
+            detected_at = time.strftime("%Y-%m-%d %H:%M:%S")
+            record["missing_since"] = detected_at
+            record["missing_detected_at"] = detected_at
             matched.append(record)
+            dirty_records.append(record)
             stats["removed"] += 1
-    return matched, stats, scanned
+
+    by_key: dict[str, list[dict]] = {}
+    for record in matched:
+        if record.get("active", True):
+            by_key.setdefault(str(record.get("key", "")), []).append(record)
+    for duplicates in by_key.values():
+        if len(duplicates) < 2:
+            continue
+        paths = " | ".join(str(record.get("path", "")) for record in duplicates)
+        for record in duplicates:
+            changed_attention = mark_attention(
+                record, "UNEXPECTED_DUPLICATE",
+                f"Mais de um arquivo ativo possui a mesma chave: {paths}",
+            )
+            if changed_attention and record not in dirty_records:
+                dirty_records.append(record)
+    return matched, stats, scanned, dirty_records, quarantine_issues
 
 
 def build_index(source_dirs, progress_callback=None) -> tuple[dict[str, list[str]], IndexResult]:
     sources = validate_source_dirs(source_dirs)
     started = time.time()
     previous = _load_catalog(sources)
-    records, _stats, scanned = _scan_and_merge(
+    records, _stats, scanned, _dirty_records, quarantine_issues = _scan_and_merge(
         sources, previous[1] if previous else [], progress_callback
     )
     index = _index_from_records(records)
     _write_catalog(records, sources)
+    record_quarantine_issues(_operational_db_path(), quarantine_issues)
     duplicates_log = _write_duplicates(index)
     return index, IndexResult(
         scanned, len(index), sum(len(value) > 1 for value in index.values()),
@@ -489,10 +876,16 @@ def update_index_incremental(source_dirs, progress_callback=None):
             "Clique primeiro em Atualizar índice completo."
         )
     started = time.time()
-    records, stats, scanned = _scan_and_merge(sources, previous[1], progress_callback)
+    records, stats, scanned, dirty_records, quarantine_issues = _scan_and_merge(
+        sources, previous[1], progress_callback
+    )
     index = _index_from_records(records)
-    _write_catalog(records, sources)
-    duplicates_log = _write_duplicates(index)
+    if dirty_records:
+        _write_catalog(records, sources, operational_records=dirty_records)
+        duplicates_log = _write_duplicates(index)
+    else:
+        duplicates_log = str(DUPLICATES_LOG_FILE.resolve()) if DUPLICATES_LOG_FILE.exists() else None
+    record_quarantine_issues(_operational_db_path(), quarantine_issues)
     result = IncrementalIndexResult(
         scanned_files=scanned, added_files=stats["added"],
         indexed_names=len(index), duplicates=sum(len(value) > 1 for value in index.values()),
@@ -500,7 +893,12 @@ def update_index_incremental(source_dirs, progress_callback=None):
         duplicates_log=duplicates_log, removed_files=stats["removed"],
         moved_files=stats["moved"], changed_files=stats["changed"],
         unchanged_files=stats["unchanged"],
+        verification_files=stats["changed"],
+        hashed_files=stats["hashed"],
+        errors=stats["errors"],
+        review_files=stats["review"],
     )
+    record_scan_summary(_operational_db_path(), result)
     return index, result
 
 

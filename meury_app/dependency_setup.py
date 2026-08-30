@@ -11,10 +11,23 @@ import sys
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 BUNDLES = {
-    "core": (["requirements.txt"], ["openpyxl", "PIL", "openai", "faiss", "numpy"]),
+    "core": (
+        ["requirements.txt"],
+        [
+            "openpyxl", "PIL", "openai", "faiss", "numpy", "boto3",
+            "google.cloud.storage", "dotenv",
+        ],
+    ),
     # Mantido como alias para os atalhos de instalação já distribuídos.
     "ai": (["requirements.txt"], ["PIL", "openai", "faiss", "numpy"]),
 }
+
+
+def _module_available(module: str) -> bool:
+    try:
+        return importlib.util.find_spec(module) is not None
+    except (ImportError, ModuleNotFoundError, AttributeError):
+        return False
 
 
 def _fingerprint(requirement_files: list[str]) -> str:
@@ -31,7 +44,7 @@ def ensure_dependencies(bundle: str) -> bool:
     requirement_files, modules = BUNDLES[bundle]
     fingerprint = _fingerprint(requirement_files)
     marker = Path(sys.prefix) / f".meury-{bundle}-requirements.sha256"
-    missing = [module for module in modules if importlib.util.find_spec(module) is None]
+    missing = [module for module in modules if not _module_available(module)]
     try:
         marker_matches = marker.read_text(encoding="ascii").strip() == fingerprint
     except OSError:

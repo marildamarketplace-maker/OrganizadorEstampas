@@ -1,5 +1,9 @@
 from datetime import datetime
 
+from meury_app.environment import load_local_environment
+
+load_local_environment()
+
 from meury_app.ui import App
 
 

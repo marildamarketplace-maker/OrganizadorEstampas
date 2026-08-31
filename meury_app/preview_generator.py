@@ -8,6 +8,7 @@ from typing import Callable
 import hashlib
 import os
 import tempfile
+import threading
 import time
 
 from .config import PREVIEW_DIR, ensure_app_dir
@@ -109,6 +110,8 @@ def create_preview(
 def generate_pending_previews(
     source_dirs, *, preview_dir: Path | None = None, limit: int | None = None,
     progress_callback: Callable[[int, int, str], None] | None = None,
+    pause_event: threading.Event | None = None,
+    allowed_asset_ids: set[str] | None = None,
 ) -> PreviewGenerationResult:
     records = load_catalog_records(source_dirs)
     if records is None:
@@ -118,12 +121,18 @@ def generate_pending_previews(
         if record.get("active", True)
         and not record.get("missing_locally", False)
         and record.get("preview_status") in {"pending", "failed"}
+        and (
+            allowed_asset_ids is None
+            or str(record.get("asset_id", "")) in allowed_asset_ids
+        )
     ]
     if limit is not None:
         pending = pending[:limit]
     started = time.monotonic()
     completed = failed = 0
     for position, record in enumerate(pending, start=1):
+        if pause_event is not None:
+            pause_event.wait()
         attempted_at = time.strftime("%Y-%m-%d %H:%M:%S")
         record["preview_attempts"] = int(record.get("preview_attempts", 0)) + 1
         record["preview_last_attempt_at"] = attempted_at

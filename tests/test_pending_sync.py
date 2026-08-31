@@ -1,6 +1,6 @@
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from meury_app.cloud_preview import CloudUploadResult
 from meury_app.pending_sync import synchronize_pending
@@ -80,6 +80,37 @@ class PendingSyncTest(unittest.TestCase):
              patch("meury_app.pending_sync.sync_pending_records", return_value=supabase):
             result = synchronize_pending([Path("/tmp")])
         self.assertEqual((result.total_work, result.completed, result.pending), (0, 0, 0))
+
+    def test_limit_selects_same_items_for_every_stage_and_passes_pause(self):
+        records = [
+            {
+                "asset_id": f"asset-{number}", "active": True,
+                "missing_locally": False, "preview_status": "pending",
+                "cloud_status": "pending", "supabase_status": "pending",
+            }
+            for number in range(3)
+        ]
+        pause = Mock()
+        preview = PreviewGenerationResult(1, 1, 0, 0.0)
+        cloud = CloudUploadResult(1, 1, 0, 0.0)
+        supabase = SupabaseSyncResult(1, 1, 0, 0.0)
+        with patch(
+            "meury_app.pending_sync.load_catalog_records",
+            side_effect=[records, records],
+        ), patch(
+            "meury_app.pending_sync.generate_pending_previews", return_value=preview,
+        ) as generate, patch(
+            "meury_app.pending_sync.upload_pending_previews", return_value=cloud,
+        ) as upload, patch(
+            "meury_app.pending_sync.sync_pending_records", return_value=supabase,
+        ) as sync:
+            result = synchronize_pending([Path("/tmp")], limit=1, pause_event=pause)
+
+        self.assertEqual(result.total_work, 1)
+        expected = {"asset-0"}
+        for call in (generate, upload, sync):
+            self.assertEqual(call.call_args.kwargs["allowed_asset_ids"], expected)
+            self.assertIs(call.call_args.kwargs["pause_event"], pause)
 
 
 if __name__ == "__main__":

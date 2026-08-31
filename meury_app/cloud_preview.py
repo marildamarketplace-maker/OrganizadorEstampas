@@ -9,6 +9,7 @@ from urllib.parse import quote
 import mimetypes
 import os
 import re
+import threading
 import time
 
 from .asset_identity import storage_asset_segment
@@ -217,6 +218,8 @@ def upload_pending_previews(
     source_dirs, *, uploader: PreviewUploader | None = None,
     preview_dir: Path | None = None, limit: int | None = None,
     progress_callback: Callable[[int, int, str], None] | None = None,
+    pause_event: threading.Event | None = None,
+    allowed_asset_ids: set[str] | None = None,
 ) -> CloudUploadResult:
     records = load_catalog_records(source_dirs)
     if records is None:
@@ -229,6 +232,10 @@ def upload_pending_previews(
         and record.get("preview_status") == "completed"
         and bool(record.get("content_hash"))
         and record.get("preview_content_hash") == record.get("content_hash")
+        and (
+            allowed_asset_ids is None
+            or str(record.get("asset_id", "")) in allowed_asset_ids
+        )
         and (
             record.get("cloud_status") in {"pending", "failed"}
             or (
@@ -249,6 +256,8 @@ def upload_pending_previews(
     started = time.monotonic()
     completed = failed = 0
     for position, record in enumerate(pending, start=1):
+        if pause_event is not None:
+            pause_event.wait()
         try:
             preview = _resolve_derived_preview(record, allowed_dir)
             original = Path(str(record.get("path", ""))).expanduser().resolve()

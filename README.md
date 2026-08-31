@@ -326,9 +326,10 @@ novamente na execução seguinte.
 
 ## Análise de uma imagem com IA
 
-A análise usa a API OpenAI e nunca inicia um lote sem confirmação. Defina a variável
-`OPENAI_API_KEY` para usar o utilitário de linha de comando; na interface, a chave é
-solicitada quando necessário e mantida apenas durante a execução do aplicativo.
+O enriquecimento em lote com IA não é executado por este aplicativo. Depois de
+**Sincronizar pendentes**, o outro sistema processa descrição, palavras-chave, cores
+e demais metadados. O utilitário abaixo permanece disponível somente para diagnóstico
+manual de uma imagem; defina `OPENAI_API_KEY` para utilizá-lo.
 
 Teste uma única imagem:
 
@@ -339,12 +340,8 @@ python analisar_imagem.py "/caminho/para/12345.jpg"
 O resultado é exibido como JSON com descrição, palavras-chave, cores, elementos,
 temas e categoria, sempre sem iniciar a análise das demais imagens.
 
-Na interface, o botão **Gerar Palavras-chave com IA** permite escolher todas as
-imagens pendentes ou um lote de teste com 1, 10, 50 ou 100 imagens. Cada
-resultado é salvo imediatamente em `resultados_analise_ia.jsonl`; fechar o aplicativo
-ou reiniciar o computador não descarta as imagens já concluídas. Ao iniciar novamente,
-somente as pendentes são oferecidas. O arquivo `analise_ia.log` registra sucessos,
-erros e resumos. Pausar ou cancelar aguarda a imagem atual terminar e ser salva.
+Não existe botão de geração em lote na interface, evitando custo duplicado e conflito
+de responsabilidade entre os dois sistemas.
 
 ### Windows
 
@@ -426,7 +423,10 @@ Ajustes do Sistema > Privacidade e Segurança > Abrir Mesmo Assim
 4. Clique em `ATUALIZAR ÍNDICE`. A mesma ação faz scans incrementais posteriores e
    identifica arquivos novos, alterados, ausentes, movidos ou renomeados.
 5. Clique em `Sincronizar pendentes` para gerar previews, publicar na Cloud e fazer
-   UPSERT no Supabase.
+   UPSERT no Supabase. Antes de iniciar, escolha 1, 10, 50, 100, 500 ou todos os
+   itens. A mesma seleção está disponível nas ações isoladas de preview, Cloud e
+   Supabase. `Pausar ação` conclui com segurança o item ou lote atual e para antes do próximo;
+   use `Continuar ação` para retomar sem repetir itens concluídos.
 6. Se usar o módulo legado de pedidos, clique em `GERAR PASTAS DOS PEDIDOS`.
 7. Confira o relatório criado na pasta de saída.
 

@@ -11,12 +11,11 @@ from .config import (
     APP_DIR, APP_NAME, load_config, original_images_path, save_config,
     select_app_data_dir, validate_original_images_path,
 )
-from .analysis_batch import run_analysis_batch
 from .catalog_diagnostics import load_catalog_statistics, load_category_records
 from .image_collector import collect_images, format_size
 from .image_analyzer import LocalImageAnalyzer
 from .indexer import (
-    append_analysis_result, build_index, load_index, pending_analysis_records,
+    append_analysis_result, build_index, load_index,
     index_catalog_available, update_index_incremental,
 )
 from .processor import process_csv_text, process_excel
@@ -45,8 +44,7 @@ class App:
         self.config = load_config()
         self.index = {}
         self.collector_cancel_event = None
-        self.analysis_run_event = None
-        self.analysis_cancel_event = None
+        self.operation_pause_event = None
         self.search_engine = None
         self.semantic_engine = None
         self.visual_engine = None
@@ -96,10 +94,6 @@ class App:
         )
         self.status_var = tk.StringVar(value="Selecione a planilha e as pastas.")
         self.index_status_var = tk.StringVar(value="Índice ainda não carregado.")
-        self.analysis_status_var = tk.StringVar(
-            value="A análise com IA está pronta para testes controlados."
-        )
-        self.analysis_current_var = tk.StringVar(value="Imagem atual: —")
         self.semantic_enabled_var = tk.BooleanVar(
             value=bool(self.config.get("semantic_search_enabled", False))
         )
@@ -149,9 +143,11 @@ class App:
         notebook.pack(fill="both", expand=True)
         organizer_tab, organizer_page, organizer_canvas = self._scrollable_page(notebook)
         collector_tab, collector_page, collector_canvas = self._scrollable_page(notebook)
+        # A pesquisa avançada pertence ao outro sistema. Mantemos o painel
+        # construído, mas fora do Notebook, para preservar compatibilidade com
+        # configurações e permitir reativação futura sem migração.
         search_tab = ttk.Frame(notebook, padding=18)
-        notebook.add(search_tab, text="Pesquisar Artes")
-        notebook.add(organizer_tab, text="Organizar pedidos")
+        notebook.add(organizer_tab, text="Mapear estampas")
         notebook.add(collector_tab, text="Copiar imagens")
 
         tab_canvases = {
@@ -209,17 +205,17 @@ class App:
         ttk.Label(main, text="Organizador de Estampas", style="Title.TLabel").pack(anchor="w")
         ttk.Label(
             main,
-            text=(
-                "Busca em ESTAMPA/ESTAMPA-VARIANTE e copia para "
-                "CLIENTE/DATA/PEDIDO/BASE."
-            ),
+            text="Configure a raiz das estampas, atualize o índice e sincronize os pendentes.",
             style="Subtitle.TLabel",
         ).pack(anchor="w", pady=(4, 20))
 
-        form = ttk.LabelFrame(main, text="1. Selecione os arquivos e pastas", padding=16)
+        form = ttk.LabelFrame(main, text="1. Pastas e configurações", padding=16)
         form.pack(fill="x")
 
-        mode_frame = ttk.Frame(form)
+        # Campos do fluxo legado de pedidos ficam construídos para manter os
+        # métodos compatíveis, porém não são exibidos na aba de mapeamento.
+        legacy_order_fields = ttk.Frame(form)
+        mode_frame = ttk.Frame(legacy_order_fields)
         mode_frame.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 6))
         ttk.Label(mode_frame, text="Entrada dos pedidos:").pack(side="left")
         self.excel_mode_button = ttk.Radiobutton(
@@ -238,17 +234,17 @@ class App:
         self.csv_mode_button.pack(side="left", padx=4)
 
         self._path_row(
-            form, 1, "Planilha Excel", self.excel_var,
+            legacy_order_fields, 1, "Planilha Excel", self.excel_var,
             "Selecionar Excel", self.select_excel
         )
-        self._csv_text_row(form, 2)
-        self._source_paths_row(form, 3)
+        self._csv_text_row(legacy_order_fields, 2)
+        self._source_paths_row(form, 0)
         self._path_row(
-            form, 4, "Pasta de dados/configurações", self.app_data_dir_var,
+            form, 1, "Pasta de dados/configurações", self.app_data_dir_var,
             "Alterar pasta", self.select_app_data_dir
         )
         self._path_row(
-            form, 5, "Pasta de saída dos pedidos", self.output_var,
+            form, 2, "Pasta de saída dos pedidos", self.output_var,
             "Selecionar saída", self.select_output
         )
 
@@ -302,46 +298,27 @@ class App:
             secondary_line, text="Abrir pasta de configurações",
             command=self.open_app_folder, style="Secondary.TButton"
         ).pack(side="left", padx=8)
-
-        analysis_frame = ttk.LabelFrame(
-            main, text="3. Análise das artes com GPT", padding=16
+        batch_controls = ttk.Frame(index_frame)
+        batch_controls.pack(fill="x", pady=(8, 0))
+        self.operation_pause_button = ttk.Button(
+            batch_controls, text="Pausar ação", command=self.pause_current_operation,
+            state="disabled",
         )
-        analysis_frame.pack(fill="x", pady=(0, 16))
-        self.analysis_button = ttk.Button(
-            analysis_frame, text="Gerar Palavras-chave com IA",
-            command=self.choose_analysis_batch, style="Primary.TButton",
+        self.operation_pause_button.pack(side="left")
+        self.operation_continue_button = ttk.Button(
+            batch_controls, text="Continuar ação",
+            command=self.continue_current_operation, state="disabled",
         )
-        self.analysis_button.pack(anchor="w")
-        self.analysis_progress = ttk.Progressbar(
-            analysis_frame, mode="determinate", maximum=100
-        )
-        self.analysis_progress.pack(fill="x", pady=(12, 8))
+        self.operation_continue_button.pack(side="left", padx=(8, 0))
         ttk.Label(
-            analysis_frame, textvariable=self.analysis_status_var, wraplength=820
-        ).pack(anchor="w")
-        ttk.Label(
-            analysis_frame, textvariable=self.analysis_current_var, wraplength=820
-        ).pack(anchor="w", pady=(4, 0))
-        analysis_actions = ttk.Frame(analysis_frame)
-        analysis_actions.pack(fill="x", pady=(10, 0))
-        self.analysis_pause_button = ttk.Button(
-            analysis_actions, text="PAUSAR", command=self.pause_analysis,
-            state="disabled",
-        )
-        self.analysis_pause_button.pack(side="left")
-        self.analysis_continue_button = ttk.Button(
-            analysis_actions, text="CONTINUAR", command=self.continue_analysis,
-            state="disabled",
-        )
-        self.analysis_continue_button.pack(side="left", padx=8)
-        self.analysis_cancel_button = ttk.Button(
-            analysis_actions, text="CANCELAR", command=self.cancel_analysis,
-            state="disabled",
-        )
-        self.analysis_cancel_button.pack(side="left")
+            batch_controls,
+            text="A pausa acontece com segurança após concluir o item ou lote atual.",
+            style="Subtitle.TLabel",
+        ).pack(side="left", padx=(12, 0))
 
-        process_frame = ttk.LabelFrame(main, text="4. Gerar pastas dos pedidos", padding=16)
-        process_frame.pack(fill="both", expand=True)
+        # Etapa legada de geração de pedidos: mantida construída para preservar
+        # os métodos existentes, mas fora do layout da aba Mapear estampas.
+        process_frame = ttk.LabelFrame(main, text="3. Gerar pastas dos pedidos", padding=16)
 
         self.progress = ttk.Progressbar(process_frame, mode="determinate", maximum=100)
         self.progress.pack(fill="x", pady=(0, 10))
@@ -745,8 +722,8 @@ class App:
             "Exemplo: procurar por ‘campanha contra câncer de mama’ também pode "
             "encontrar artes marcadas como Outubro Rosa, laço rosa, saúde feminina "
             "e prevenção.\n\n"
-            "Antes de usar, gere as palavras-chave das imagens e atualize o índice "
-            "semântico.",
+            "Os metadados são gerados pelo sistema de IA após a sincronização. "
+            "Atualize o índice semântico depois que esses dados estiverem disponíveis.",
         )
 
     def show_similar_help(self):
@@ -755,8 +732,8 @@ class App:
             "Essa pesquisa usa a descrição, as cores, os elementos, os temas e a "
             "categoria gerados pelo GPT para localizar artes com conteúdo parecido.\n\n"
             "Ela compara o significado visual, não os pixels ou arquivos idênticos. "
-            "Para melhores resultados, gere as palavras-chave e atualize o índice "
-            "semântico.",
+            "Para melhores resultados, sincronize as imagens, aguarde o processamento "
+            "no outro sistema e depois atualize o índice semântico.",
         )
 
     def _mark_semantic_stale(self):
@@ -1561,25 +1538,100 @@ class App:
         else:
             self.start_indexing()
 
+    def _choose_operation_limit(self, title, callback):
+        """Escolhe um lote pequeno para teste ou todos os itens pendentes."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title(title)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+        body = ttk.Frame(dialog, padding=20)
+        body.pack(fill="both", expand=True)
+        ttk.Label(
+            body,
+            text="Quantos itens deseja processar nesta execução?",
+            wraplength=420,
+        ).pack(anchor="w", pady=(0, 12))
+        choice = tk.StringVar(value="10")
+        for value, label in (
+            ("1", "1 item (teste rápido)"), ("10", "10 itens"),
+            ("50", "50 itens"), ("100", "100 itens"),
+            ("500", "500 itens"), ("all", "Todos os itens pendentes"),
+        ):
+            ttk.Radiobutton(
+                body, text=label, variable=choice, value=value,
+            ).pack(anchor="w", pady=2)
+        actions = ttk.Frame(body)
+        actions.pack(fill="x", pady=(16, 0))
+
+        def confirm():
+            limit = None if choice.get() == "all" else int(choice.get())
+            dialog.destroy()
+            callback(limit)
+
+        ttk.Button(actions, text="INICIAR", command=confirm).pack(side="left")
+        ttk.Button(actions, text="Cancelar", command=dialog.destroy).pack(
+            side="left", padx=8,
+        )
+
+    def _start_controllable_operation(self):
+        self.operation_pause_event = threading.Event()
+        self.operation_pause_event.set()
+        self._set_busy(True)
+        self.operation_pause_button.configure(state="normal")
+        self.operation_continue_button.configure(state="disabled")
+
+    def pause_current_operation(self):
+        if self.operation_pause_event is None:
+            return
+        self.operation_pause_event.clear()
+        self.operation_pause_button.configure(state="disabled")
+        self.operation_continue_button.configure(state="normal")
+        self.status_var.set("Pausa solicitada; concluindo o item ou lote atual com segurança...")
+
+    def continue_current_operation(self):
+        if self.operation_pause_event is None:
+            return
+        self.operation_pause_event.set()
+        self.operation_pause_button.configure(state="normal")
+        self.operation_continue_button.configure(state="disabled")
+        self.status_var.set("Processamento retomado...")
+
+    def _finish_controllable_operation(self):
+        if self.operation_pause_event is not None:
+            self.operation_pause_event.set()
+        self.operation_pause_event = None
+        self.operation_pause_button.configure(state="disabled")
+        self.operation_continue_button.configure(state="disabled")
+        self._set_busy(False)
+
     def start_preview_generation(self):
         sources = [Path(source) for source in self.source_dirs]
         if not sources:
             messagebox.showwarning("Previews", "Adicione e indexe as pastas primeiro.")
             return
-        self._set_busy(True)
+        self._choose_operation_limit(
+            "Gerar previews pendentes",
+            lambda limit: self._begin_preview_generation(sources, limit),
+        )
+
+    def _begin_preview_generation(self, sources, limit):
+        self._start_controllable_operation()
         self.progress.configure(mode="determinate", value=0)
-        self.status_var.set("Gerando previews locais pendentes...")
+        scope = "todos" if limit is None else f"até {limit:,}"
+        self.status_var.set(f"Gerando {scope} previews locais pendentes...")
         threading.Thread(
-            target=self._preview_generation_worker, args=(sources,), daemon=True,
+            target=self._preview_generation_worker, args=(sources, limit), daemon=True,
         ).start()
 
-    def _preview_generation_worker(self, sources):
+    def _preview_generation_worker(self, sources, limit):
         try:
             result = generate_pending_previews(
                 sources,
                 progress_callback=lambda current, total, message: self.root.after(
                     0, self._preview_generation_progress, current, total, message
                 ),
+                limit=limit, pause_event=self.operation_pause_event,
             )
             self.root.after(0, self._preview_generation_complete, result)
         except Exception as exc:
@@ -1592,7 +1644,7 @@ class App:
     def _preview_generation_complete(self, result):
         self.progress.configure(value=100 if result.pending else 0)
         self.status_var.set("Geração local de previews concluída.")
-        self._set_busy(False)
+        self._finish_controllable_operation()
         self._refresh_catalog_statistics()
         messagebox.showinfo(
             "Previews concluídos",
@@ -1606,20 +1658,28 @@ class App:
         if not sources:
             messagebox.showwarning("Cloud", "Adicione e indexe as pastas primeiro.")
             return
-        self._set_busy(True)
+        self._choose_operation_limit(
+            "Enviar previews para Cloud",
+            lambda limit: self._begin_cloud_upload(sources, limit),
+        )
+
+    def _begin_cloud_upload(self, sources, limit):
+        self._start_controllable_operation()
         self.progress.configure(mode="determinate", value=0)
-        self.status_var.set("Enviando somente previews concluídos para Cloud...")
+        scope = "todos" if limit is None else f"até {limit:,}"
+        self.status_var.set(f"Enviando {scope} previews concluídos para Cloud...")
         threading.Thread(
-            target=self._cloud_upload_worker, args=(sources,), daemon=True,
+            target=self._cloud_upload_worker, args=(sources, limit), daemon=True,
         ).start()
 
-    def _cloud_upload_worker(self, sources):
+    def _cloud_upload_worker(self, sources, limit):
         try:
             result = upload_pending_previews(
                 sources,
                 progress_callback=lambda current, total, message: self.root.after(
                     0, self._cloud_upload_progress, current, total, message
                 ),
+                limit=limit, pause_event=self.operation_pause_event,
             )
             self.root.after(0, self._cloud_upload_complete, result)
         except Exception as exc:
@@ -1632,7 +1692,7 @@ class App:
     def _cloud_upload_complete(self, result):
         self.progress.configure(value=100 if result.pending else 0)
         self.status_var.set("Envio de previews para Cloud concluído.")
-        self._set_busy(False)
+        self._finish_controllable_operation()
         self._refresh_catalog_statistics()
         messagebox.showinfo(
             "Cloud",
@@ -1646,20 +1706,28 @@ class App:
         if not sources:
             messagebox.showwarning("Supabase", "Adicione e indexe as pastas primeiro.")
             return
-        self._set_busy(True)
+        self._choose_operation_limit(
+            "Sincronizar Supabase",
+            lambda limit: self._begin_supabase_sync(sources, limit),
+        )
+
+    def _begin_supabase_sync(self, sources, limit):
+        self._start_controllable_operation()
         self.progress.configure(mode="determinate", value=0)
-        self.status_var.set("Sincronizando o catálogo comercial com Supabase...")
+        scope = "todos" if limit is None else f"até {limit:,}"
+        self.status_var.set(f"Sincronizando {scope} registros com Supabase...")
         threading.Thread(
-            target=self._supabase_sync_worker, args=(sources,), daemon=True,
+            target=self._supabase_sync_worker, args=(sources, limit), daemon=True,
         ).start()
 
-    def _supabase_sync_worker(self, sources):
+    def _supabase_sync_worker(self, sources, limit):
         try:
             result = sync_pending_records(
                 sources,
                 progress_callback=lambda current, total, message: self.root.after(
                     0, self._supabase_sync_progress, current, total, message
                 ),
+                limit=limit, pause_event=self.operation_pause_event,
             )
             self.root.after(0, self._supabase_sync_complete, result)
         except Exception as exc:
@@ -1672,7 +1740,7 @@ class App:
     def _supabase_sync_complete(self, result):
         self.progress.configure(value=100 if result.pending else 0)
         self.status_var.set("Sincronização com Supabase concluída.")
-        self._set_busy(False)
+        self._finish_controllable_operation()
         self._refresh_catalog_statistics()
         messagebox.showinfo(
             "Supabase",
@@ -1688,20 +1756,28 @@ class App:
                 "Sincronizar pendentes", "Adicione e indexe as pastas primeiro."
             )
             return
-        self._set_busy(True)
+        self._choose_operation_limit(
+            "Sincronizar pendentes",
+            lambda limit: self._begin_pending_sync(sources, limit),
+        )
+
+    def _begin_pending_sync(self, sources, limit):
+        self._start_controllable_operation()
         self.progress.configure(mode="determinate", value=0)
-        self.status_var.set("Buscando itens pendentes...")
+        scope = "todos" if limit is None else f"até {limit:,}"
+        self.status_var.set(f"Buscando {scope} itens pendentes...")
         threading.Thread(
-            target=self._pending_sync_worker, args=(sources,), daemon=True,
+            target=self._pending_sync_worker, args=(sources, limit), daemon=True,
         ).start()
 
-    def _pending_sync_worker(self, sources):
+    def _pending_sync_worker(self, sources, limit):
         try:
             result = synchronize_pending(
                 sources,
                 progress_callback=lambda current, total, message: self.root.after(
                     0, self._pending_sync_progress, current, total, message
                 ),
+                limit=limit, pause_event=self.operation_pause_event,
             )
             self.root.after(0, self._pending_sync_complete, result)
         except Exception as exc:
@@ -1714,7 +1790,7 @@ class App:
     def _pending_sync_complete(self, result):
         self.progress.configure(value=100 if not result.pending else 0)
         self.status_var.set("Sincronização de pendentes concluída.")
-        self._set_busy(False)
+        self._finish_controllable_operation()
         self._refresh_catalog_statistics()
         messagebox.showinfo(
             "Sincronizar pendentes",
@@ -1848,6 +1924,7 @@ class App:
         self._refresh_catalog_statistics()
 
     def _ensure_openai_api_key(self):
+        """Mantém suporte às pesquisas opcionais que ainda usam a API OpenAI."""
         if not os.environ.get("OPENAI_API_KEY", "").strip():
             api_key = simpledialog.askstring(
                 "Chave da API OpenAI",
@@ -1860,190 +1937,6 @@ class App:
                 return False
             os.environ["OPENAI_API_KEY"] = api_key.strip()
         return True
-
-    def choose_analysis_batch(self):
-        if not self._ensure_openai_api_key():
-            return
-        sources = [Path(source) for source in self.source_dirs]
-        if not sources:
-            messagebox.showwarning(
-                "Índice necessário", "Adicione e indexe as pastas de estampas primeiro."
-            )
-            return
-        try:
-            pending, total_pending = pending_analysis_records(sources)
-        except Exception as exc:
-            messagebox.showerror("Não foi possível iniciar", str(exc))
-            return
-        if not pending:
-            messagebox.showinfo(
-                "Análise com IA", "Não há imagens JPG, JPEG ou PNG pendentes."
-            )
-            return
-
-        dialog = tk.Toplevel(self.root)
-        dialog.title("Escolher quantidade")
-        dialog.transient(self.root)
-        dialog.grab_set()
-        dialog.resizable(False, False)
-        body = ttk.Frame(dialog, padding=20)
-        body.pack(fill="both", expand=True)
-        ttk.Label(
-            body,
-            text=f"Existem {total_pending:,} imagens pendentes. Quanto deseja processar?",
-            wraplength=440,
-        ).pack(anchor="w", pady=(0, 12))
-        choice = tk.StringVar(value="1")
-        for value in ("1", "10", "50", "100", "all"):
-            if value == "all":
-                label = "Todas as imagens pendentes"
-            elif value == "1":
-                label = "1 imagem (recomendado para teste)"
-            else:
-                label = f"{int(value):,} imagens"
-            ttk.Radiobutton(
-                body, text=label, variable=choice, value=value
-            ).pack(anchor="w", pady=2)
-        actions = ttk.Frame(body)
-        actions.pack(fill="x", pady=(16, 0))
-
-        def confirm():
-            selected_limit = None if choice.get() == "all" else int(choice.get())
-            dialog.destroy()
-            self.start_analysis_batch(
-                pending if selected_limit is None else pending[:selected_limit],
-                total_pending,
-            )
-
-        ttk.Button(actions, text="INICIAR", command=confirm).pack(side="left")
-        ttk.Button(actions, text="Cancelar", command=dialog.destroy).pack(
-            side="left", padx=8
-        )
-        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
-        dialog.wait_window()
-
-    def start_analysis_batch(self, records, total_pending):
-        self.analysis_run_event = threading.Event()
-        self.analysis_run_event.set()
-        self.analysis_cancel_event = threading.Event()
-        self.analysis_total_pending = total_pending
-        self._set_busy(True)
-        self.analysis_pause_button.configure(state="normal")
-        self.analysis_continue_button.configure(state="disabled")
-        self.analysis_cancel_button.configure(state="normal")
-        self.analysis_progress.configure(value=0)
-        self.analysis_status_var.set(
-            f"Conectando à API OpenAI. Selecionadas {len(records):,} de "
-            f"{total_pending:,} imagens pendentes..."
-        )
-        self.analysis_current_var.set("Imagem atual: aguardando o modelo...")
-        thread = threading.Thread(
-            target=self._analysis_worker, args=(records,), daemon=True
-        )
-        thread.start()
-
-    def _analysis_worker(self, records):
-        try:
-            result = run_analysis_batch(
-                records,
-                run_event=self.analysis_run_event,
-                cancel_event=self.analysis_cancel_event,
-                current_callback=lambda path: self.root.after(
-                    0, self.analysis_current_var.set, f"Imagem atual: {path}"
-                ),
-                progress_callback=lambda *values: self.root.after(
-                    0, self._analysis_progress, *values
-                ),
-            )
-            self.root.after(0, self._analysis_complete, result)
-        except Exception as exc:
-            self.root.after(0, self._analysis_failed, str(exc))
-
-    @staticmethod
-    def _format_duration(seconds):
-        seconds = max(0, int(seconds))
-        hours, remainder = divmod(seconds, 3600)
-        minutes, seconds = divmod(remainder, 60)
-        if hours:
-            return f"{hours}h {minutes:02d}m {seconds:02d}s"
-        if minutes:
-            return f"{minutes}m {seconds:02d}s"
-        return f"{seconds}s"
-
-    def _analysis_progress(self, completed, selected, errors, path, elapsed):
-        percent = completed / selected * 100 if selected else 0
-        speed = completed / elapsed if elapsed > 0 else 0
-        remaining = (selected - completed) / speed if speed > 0 else 0
-        self.analysis_progress.configure(value=percent)
-        self.analysis_status_var.set(
-            f"Processando: {completed:,} / {selected:,} | {percent:.1f}% | "
-            f"Total pendente ao iniciar: {self.analysis_total_pending:,} | "
-            f"Erros: {errors:,} | Velocidade média: {speed:.2f} imagens/s | "
-            f"Tempo decorrido: {self._format_duration(elapsed)} | "
-            f"Tempo restante estimado: {self._format_duration(remaining)}"
-        )
-        self.analysis_current_var.set(f"Imagem atual: {path}")
-
-    def pause_analysis(self):
-        if self.analysis_run_event is None:
-            return
-        self.analysis_run_event.clear()
-        self.analysis_pause_button.configure(state="disabled")
-        self.analysis_continue_button.configure(state="normal")
-        self.analysis_status_var.set(
-            "Pausa solicitada. A imagem atual será finalizada e salva primeiro."
-        )
-
-    def continue_analysis(self):
-        if self.analysis_run_event is None:
-            return
-        self.analysis_run_event.set()
-        self.analysis_pause_button.configure(state="normal")
-        self.analysis_continue_button.configure(state="disabled")
-        self.analysis_status_var.set("Continuando a análise...")
-
-    def cancel_analysis(self):
-        if self.analysis_cancel_event is None:
-            return
-        self.analysis_cancel_event.set()
-        if self.analysis_run_event:
-            self.analysis_run_event.set()
-        self.analysis_pause_button.configure(state="disabled")
-        self.analysis_continue_button.configure(state="disabled")
-        self.analysis_cancel_button.configure(state="disabled")
-        self.analysis_status_var.set(
-            "Cancelamento solicitado. A imagem atual será finalizada e salva primeiro."
-        )
-
-    def _analysis_complete(self, result):
-        self.search_engine = None
-        self._mark_semantic_stale()
-        self.analysis_progress.configure(
-            value=(result.completed / result.selected * 100) if result.selected else 0
-        )
-        state = "Cancelado" if result.cancelled else "Concluído"
-        text = (
-            f"{state}: {result.completed:,} processadas; "
-            f"{result.succeeded:,} concluídas; {result.errors:,} com erro; "
-            f"tempo {self._format_duration(result.elapsed_seconds)}."
-        )
-        self.analysis_status_var.set(text)
-        self._finish_analysis_controls()
-        self._refresh_catalog_statistics()
-        messagebox.showinfo("Análise com IA", text)
-
-    def _analysis_failed(self, message):
-        self.analysis_status_var.set(f"Não foi possível continuar: {message}")
-        self._finish_analysis_controls()
-        messagebox.showerror("Erro na análise com IA", message)
-
-    def _finish_analysis_controls(self):
-        self.analysis_run_event = None
-        self.analysis_cancel_event = None
-        self.analysis_pause_button.configure(state="disabled")
-        self.analysis_continue_button.configure(state="disabled")
-        self.analysis_cancel_button.configure(state="disabled")
-        self._set_busy(False)
 
     def start_processing(self):
         excel = self.excel_var.get().strip()
@@ -2305,7 +2198,10 @@ class App:
         self.progress.configure(mode="determinate", value=0)
         self.status_var.set("Ocorreu um erro.")
         self._log(f"ERRO: {message}")
-        self._set_busy(False)
+        if self.operation_pause_event is not None:
+            self._finish_controllable_operation()
+        else:
+            self._set_busy(False)
         messagebox.showerror("Erro", message)
 
     def _set_busy(self, busy):
@@ -2316,7 +2212,6 @@ class App:
         self.cloud_button.configure(state=state)
         self.supabase_button.configure(state=state)
         self.pending_sync_button.configure(state=state)
-        self.analysis_button.configure(state=state)
         self.semantic_update_button.configure(state=state)
         self.semantic_rebuild_button.configure(state=state)
         self.visual_find_button.configure(state=state)

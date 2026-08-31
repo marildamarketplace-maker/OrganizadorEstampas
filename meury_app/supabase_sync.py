@@ -10,6 +10,7 @@ from urllib.request import Request, urlopen
 from urllib.error import HTTPError
 import json
 import os
+import threading
 import time
 
 from .asset_identity import relative_asset_identity
@@ -133,6 +134,8 @@ def sync_pending_records(
     source_dirs, *, client: SupabaseClient | None = None, limit: int | None = None,
     batch_size: int = 100,
     progress_callback: Callable[[int, int, str], None] | None = None,
+    pause_event: threading.Event | None = None,
+    allowed_asset_ids: set[str] | None = None,
 ) -> SupabaseSyncResult:
     if batch_size < 1 or batch_size > 500:
         raise ValueError("batch_size deve estar entre 1 e 500 registros.")
@@ -148,6 +151,10 @@ def sync_pending_records(
         and bool(record.get("preview_url"))
         and bool(record.get("storage_key"))
         and bool(record.get("content_hash"))
+        and (
+            allowed_asset_ids is None
+            or str(record.get("asset_id", "")) in allowed_asset_ids
+        )
         and (
             record.get("supabase_status") in {"pending", "failed"}
             or (
@@ -181,6 +188,8 @@ def sync_pending_records(
 
     processed = 0
     for offset in range(0, len(pending), batch_size):
+        if pause_event is not None:
+            pause_event.wait()
         batch = pending[offset:offset + batch_size]
         try:
             if client is None:  # Garantido pela inicialização sob demanda acima.

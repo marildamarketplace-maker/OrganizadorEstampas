@@ -1,6 +1,8 @@
 from pathlib import Path
 import hashlib
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -50,6 +52,33 @@ class PreviewGeneratorTest(unittest.TestCase):
             self.assertNotEqual(preview, original)
             with Image.open(preview) as image:
                 self.assertEqual(image.size, (1024, 512))
+
+    def test_pauses_before_processing_and_resumes_safely(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "artes"
+            original = source / "101" / "101-A.png"
+            original.parent.mkdir(parents=True)
+            Image.new("RGB", (100, 100), "red").save(original)
+            patches = self.catalog_files(root)
+            pause = threading.Event()
+            result = []
+            with patches[0], patches[1], patches[2], patches[3]:
+                build_index(source)
+                worker = threading.Thread(
+                    target=lambda: result.append(generate_pending_previews(
+                        source, preview_dir=root / "previews", pause_event=pause,
+                    )),
+                )
+                worker.start()
+                time.sleep(0.05)
+                self.assertTrue(worker.is_alive())
+                self.assertEqual(list((root / "previews").glob("*")), [])
+                pause.set()
+                worker.join(timeout=2)
+
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(result[0].completed, 1)
 
     def test_marks_corrupt_pending_preview_as_failed_and_continues(self):
         with tempfile.TemporaryDirectory() as temporary:

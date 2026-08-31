@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
+import threading
 import time
 
 from .cloud_preview import PreviewUploader, upload_pending_previews
@@ -53,17 +54,25 @@ def synchronize_pending(
     source_dirs, *, preview_dir: Path | None = None,
     uploader: PreviewUploader | None = None, supabase_client: SupabaseClient | None = None,
     progress_callback: Callable[[int, int, str], None] | None = None,
+    limit: int | None = None, pause_event: threading.Event | None = None,
 ) -> PendingSyncResult:
     """Gera derivados, envia-os e publica metadados, sempre nessa ordem."""
     initial = load_catalog_records(source_dirs)
     if initial is None:
         raise ValueError("Atualize o índice antes de sincronizar os pendentes.")
-    total_work = _estimate_work(initial)
+    selected = [
+        record for record in initial
+        if _active(record) and _needs_supabase(record)
+    ]
+    if limit is not None:
+        selected = selected[:limit]
+    allowed_asset_ids = {str(record.get("asset_id", "")) for record in selected}
+    total_work = len(selected)
     started = time.monotonic()
     processed_units = 0
     stage_work = sum(
         int(_needs_preview(record)) + int(_needs_cloud(record)) + int(_needs_supabase(record))
-        for record in initial if _active(record)
+        for record in selected
     )
 
     def stage_progress(stage: str):
@@ -79,16 +88,19 @@ def synchronize_pending(
     preview = generate_pending_previews(
         source_dirs, preview_dir=preview_dir,
         progress_callback=stage_progress("previews"),
+        pause_event=pause_event, allowed_asset_ids=allowed_asset_ids,
     )
     processed_units += preview.pending
     cloud = upload_pending_previews(
         source_dirs, uploader=uploader, preview_dir=preview_dir,
         progress_callback=stage_progress("Cloud"),
+        pause_event=pause_event, allowed_asset_ids=allowed_asset_ids,
     )
     processed_units += cloud.pending
     supabase = sync_pending_records(
         source_dirs, client=supabase_client,
         progress_callback=stage_progress("Supabase"),
+        pause_event=pause_event, allowed_asset_ids=allowed_asset_ids,
     )
     processed_units += supabase.pending
 

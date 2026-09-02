@@ -153,11 +153,13 @@ def resolve_relative_image_path(
 
 
 def resolve_record_path(record: dict, source_dirs=None, config: dict | None = None) -> Path:
-    """Resolve um registro; `source_dirs` mantém índices antigos com múltiplas raízes."""
+    """Resolve um registro pela posição da origem na lista de pastas."""
     relative = str(record.get("relative_path", ""))
-    if source_dirs:
+    if source_dirs is None and config is not None:
+        source_dirs = config.get("source_dirs")
+    if source_dirs is not None:
         source_number = int(record.get("source", 0))
-        if source_number >= len(source_dirs):
+        if not 0 <= source_number < len(source_dirs):
             raise ValueError("A origem registrada não existe na configuração atual.")
         return resolve_relative_image_path(relative, root=Path(source_dirs[source_number]))
     return resolve_relative_image_path(relative, config=config)
@@ -191,20 +193,26 @@ def ensure_app_dir():
 
 def load_config():
     ensure_app_dir()
-    if not CONFIG_FILE.exists():
-        return DEFAULT_CONFIG.copy()
     try:
         data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-        # Migra configurações antigas que aceitavam apenas uma pasta.
-        if "source_dirs" not in data:
-            old_source = str(data.get("source_dir", "")).strip()
-            data["source_dirs"] = [old_source] if old_source else []
-        merged = {**DEFAULT_CONFIG, **data}
-        if not merged.get("original_images_path") and len(merged.get("source_dirs", [])) == 1:
-            merged["original_images_path"] = merged["source_dirs"][0]
-        return merged
-    except Exception:
-        return DEFAULT_CONFIG.copy()
+        if not isinstance(data, dict):
+            data = {}
+    except (OSError, ValueError):
+        data = {}
+    # A lista salva, inclusive vazia, prevalece sobre a raiz legada e o .env.
+    # O ambiente fornece apenas a entrada inicial de instalações sem lista.
+    if "source_dirs" not in data:
+        old_source = (
+            str(data.get("source_dir", "")).strip()
+            or str(data.get("original_images_path", "")).strip()
+            or os.environ.get("ORIGINAL_IMAGES_PATH", "").strip()
+        )
+        data["source_dirs"] = [old_source] if old_source else []
+    merged = {**DEFAULT_CONFIG, **data}
+    merged["original_images_path"] = (
+        merged["source_dirs"][0] if merged["source_dirs"] else ""
+    )
+    return merged
 
 def save_config(data):
     ensure_app_dir()

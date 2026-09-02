@@ -9,6 +9,31 @@ from meury_app.original_folder import (
 
 
 class OriginalFolderTest(unittest.TestCase):
+    def test_opens_original_from_second_source_with_same_relative_directory(self):
+        with tempfile.TemporaryDirectory() as folder:
+            roots = [Path(folder) / "primeira", Path(folder) / "segunda"]
+            for root in roots:
+                (root / "6844" / "A").mkdir(parents=True)
+            config = {
+                "source_dirs": [str(root) for root in roots],
+                "original_images_path": str(roots[0]),
+            }
+            record = {"source": 1, "original_relative_path": "6844/A"}
+            with patch("meury_app.original_folder.open_with_default_application") as opener:
+                result = open_original_directory(record, config)
+            expected = (roots[1] / "6844" / "A").resolve()
+            self.assertEqual(result, expected)
+            opener.assert_called_once_with(expected)
+
+    def test_rejects_unknown_and_negative_source(self):
+        with tempfile.TemporaryDirectory() as folder:
+            for source in (-1, 2):
+                with self.subTest(source=source), self.assertRaises(OriginalFolderError):
+                    resolve_original_directory(
+                        {"source": source, "original_relative_path": "6844/A"},
+                        {"source_dirs": [folder]},
+                    )
+
     def test_resolves_directory_relative_to_configured_root(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

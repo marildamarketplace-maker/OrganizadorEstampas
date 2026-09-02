@@ -14,6 +14,27 @@ from meury_app.operational_store import load_quarantine_issues
 
 
 class JsonlIndexTest(unittest.TestCase):
+    def test_build_reload_and_incremental_scan_with_two_sources(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            sources = [root / "primeira", root / "segunda"]
+            images = [sources[0] / "100" / "100-A.jpg", sources[1] / "200" / "200-B.jpg"]
+            for image in images:
+                image.parent.mkdir(parents=True)
+                image.write_bytes(b"image")
+            patches = self.catalog_files(root)
+            with patches[0], patches[1], patches[2], patches[3]:
+                index, result = build_index(sources)
+                self.assertEqual(result.source_dirs, 2)
+                self.assertEqual(index[image_key("100", "100-A")], [str(images[0])])
+                self.assertEqual(index[image_key("200", "200-B")], [str(images[1])])
+                records = load_index_payload(sources)["records"]
+                self.assertEqual({record["source"] for record in records}, {0, 1})
+                self.assertEqual({record["path"] for record in records}, set(map(str, images)))
+                _, incremental = update_index_incremental(sources)
+                self.assertEqual(incremental.unchanged_files, 2)
+                self.assertEqual(incremental.hashed_files, 0)
+
     def catalog_files(self, root):
         return (
             patch.object(indexer_module, "INDEX_FILE", root / "indice.jsonl"),

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 import os
 
-from .config import resolve_relative_image_path, validate_original_images_path
+from .config import resolve_record_path, validate_original_images_path
 from .platform_utils import open_with_default_application
 
 
@@ -15,7 +15,8 @@ class OriginalFolderError(ValueError):
 
 def resolve_original_directory(record: dict, config: dict | None = None) -> Path:
     try:
-        root = validate_original_images_path(config)
+        root = resolve_record_path({**record, "relative_path": ""}, config=config)
+        validate_original_images_path({"original_images_path": str(root)})
     except (OSError, ValueError) as exc:
         raise OriginalFolderError(str(exc)) from exc
     raw_relative = str(
@@ -33,7 +34,7 @@ def resolve_original_directory(record: dict, config: dict | None = None) -> Path
     if relative.name.casefold() == filename.casefold() or relative.suffix:
         relative = relative.parent
     try:
-        target = resolve_relative_image_path(relative, root=root)
+        target = resolve_record_path({"relative_path": str(relative)}, [root])
     except ValueError as exc:
         raise OriginalFolderError(str(exc)) from exc
     if not target.is_dir():

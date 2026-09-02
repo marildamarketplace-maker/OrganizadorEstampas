@@ -8,7 +8,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from .art_search import ArtSearchEngine, SearchResult, ThumbnailCache, principal_keywords
 from .config import (
-    APP_DIR, APP_NAME, load_config, original_images_path, save_config,
+    APP_DIR, APP_NAME, load_config, save_config,
     select_app_data_dir, validate_original_images_path,
 )
 from .catalog_diagnostics import load_catalog_statistics, load_category_records
@@ -16,7 +16,7 @@ from .image_collector import collect_images, format_size
 from .image_analyzer import LocalImageAnalyzer
 from .indexer import (
     append_analysis_result, build_index, load_index,
-    index_catalog_available, update_index_incremental,
+    index_catalog_available, normalize_source_dirs, update_index_incremental,
 )
 from .processor import process_csv_text, process_excel
 from .platform_utils import open_with_default_application
@@ -58,17 +58,10 @@ class App:
         self.input_mode_var = tk.StringVar(
             value=self.config.get("input_mode", "excel")
         )
-        self.source_dirs = list(self.config.get("source_dirs", []))
-        self.root_path_error = ""
-        try:
-            configured_root = original_images_path(self.config)
-            self.source_dirs = [str(configured_root)]
-            validate_original_images_path(self.config)
-        except ValueError as exc:
-            if self.config.get("original_images_path") or os.environ.get("ORIGINAL_IMAGES_PATH"):
-                self.root_path_error = str(exc)
-        except PermissionError as exc:
-            self.root_path_error = str(exc)
+        self.source_dirs = [
+            str(path) for path in normalize_source_dirs(self.config.get("source_dirs", []))
+        ]
+        self._validate_source_paths()
         self.output_var = tk.StringVar(value=self.config.get("output_dir", ""))
         self.app_data_dir_var = tk.StringVar(value=str(APP_DIR))
         self.collector_source_dirs = list(
@@ -129,11 +122,20 @@ class App:
         try:
             if self.root.winfo_exists():
                 messagebox.showerror(
-                    "Diretório raiz indisponível", message, parent=self.root
+                    "Pasta de entrada indisponível", message, parent=self.root
                 )
         except tk.TclError:
             # A janela pode ter sido fechada antes da execução do after_idle.
             return
+
+    def _validate_source_paths(self):
+        errors = []
+        for source in self.source_dirs:
+            try:
+                validate_original_images_path({"original_images_path": source})
+            except (OSError, ValueError) as exc:
+                errors.append(str(exc))
+        self.root_path_error = "\n\n".join(errors)
 
     def _build_ui(self):
         main = ttk.Frame(self.root, padding=24)
@@ -205,7 +207,7 @@ class App:
         ttk.Label(main, text="Organizador de Estampas", style="Title.TLabel").pack(anchor="w")
         ttk.Label(
             main,
-            text="Configure a raiz das estampas, atualize o índice e sincronize os pendentes.",
+            text="Adicione as pastas de estampas, atualize o índice e sincronize os pendentes.",
             style="Subtitle.TLabel",
         ).pack(anchor="w", pady=(4, 20))
 
@@ -1306,7 +1308,7 @@ class App:
         parent.columnconfigure(1, weight=1)
 
     def _source_paths_row(self, parent, row):
-        ttk.Label(parent, text="Diretório raiz das estampas").grid(
+        ttk.Label(parent, text="Pastas de entrada das estampas").grid(
             row=row, column=0, sticky="nw", pady=7
         )
         list_frame = ttk.Frame(parent)
@@ -1327,12 +1329,12 @@ class App:
         button_frame = ttk.Frame(parent)
         button_frame.grid(row=row, column=2, sticky="n", pady=7)
         self.add_source_button = ttk.Button(
-            button_frame, text="Selecionar raiz", command=self.select_source
+            button_frame, text="Adicionar pasta", command=self.select_source
         )
         self.add_source_button.pack(fill="x")
         self.remove_source_button = ttk.Button(
             button_frame,
-            text="Remover selecionada",
+            text="Remover selecionadas",
             command=self.remove_selected_sources,
         )
         self.remove_source_button.pack(fill="x", pady=(6, 0))
@@ -1385,11 +1387,13 @@ class App:
             self._save_paths()
 
     def select_source(self):
-        path = filedialog.askdirectory(title="Selecione o diretório raiz das estampas")
+        path = filedialog.askdirectory(title="Adicione uma pasta de entrada das estampas")
         if path:
-            self.source_dirs = [path]
-            self.config["original_images_path"] = path
-            self.root_path_error = ""
+            sources = [str(source) for source in normalize_source_dirs([*self.source_dirs, path])]
+            if sources == self.source_dirs:
+                return
+            self.source_dirs = sources
+            self._validate_source_paths()
             self._refresh_source_list()
             self._save_paths()
             self.index = {}
@@ -1397,7 +1401,7 @@ class App:
             self.semantic_engine = None
             self.visual_engine = None
             self.index_status_var.set(
-                "Pastas alteradas. Clique em Atualizar índice."
+                self.root_path_error or "Pastas alteradas. Clique em Atualizar índice."
             )
 
     def remove_selected_sources(self):
@@ -1406,8 +1410,7 @@ class App:
             return
         for index in reversed(selected):
             del self.source_dirs[index]
-        if not self.source_dirs:
-            self.config["original_images_path"] = ""
+        self._validate_source_paths()
         self._refresh_source_list()
         self._save_paths()
         self.index = {}
@@ -1415,7 +1418,7 @@ class App:
         self.semantic_engine = None
         self.visual_engine = None
         self.index_status_var.set(
-            "Pastas alteradas. Clique em Atualizar índice."
+            self.root_path_error or "Pastas alteradas. Clique em Atualizar índice."
         )
 
     def select_collector_source(self):
@@ -1479,7 +1482,7 @@ class App:
             "source_dirs": self.source_dirs,
             "original_images_path": (
                 self.source_dirs[0] if self.source_dirs
-                else self.config.get("original_images_path", "")
+                else ""
             ),
             "output_dir": self.output_var.get(),
             "collector_source_dirs": self.collector_source_dirs,
@@ -1493,7 +1496,7 @@ class App:
         }
         save_config(updated_config)
         # Todas as ações abertas nesta sessão passam a enxergar imediatamente a
-        # mesma raiz que acabou de ser escolhida, sem exigir reinicialização.
+        # mesma lista de pastas escolhida, sem exigir reinicialização.
         self.config.update(updated_config)
 
     def _try_load_saved_index(self):

@@ -6,7 +6,7 @@ O fluxo operacional principal termina ao publicar a estampa com
 `processing_status=PENDING` no Supabase:
 
 ```text
-Diretório raiz → Atualizar índice (scan local) → SQLite
+Pastas de entrada → Atualizar índice (scan local) → SQLite
 → Sincronizar pendentes → preview derivado → Cloud → UPSERT Supabase
 ```
 
@@ -28,8 +28,10 @@ alternativa administrada, defina `MEURY_APP_DATA_PATH` no `.env`.
 
 Defina as variáveis no arquivo `.env` na raiz do projeto (ou no ambiente que
 inicia o aplicativo). O `.env` é carregado automaticamente no Windows e macOS,
-sem substituir variáveis já definidas pelo sistema. O diretório raiz também pode
-ser escolhido na interface e fica salvo na configuração local.
+sem substituir variáveis já definidas pelo sistema. Em **Mapear estampas**, use
+**Adicionar pasta** para incluir uma ou mais pastas de entrada. A lista fica salva
+na configuração local e é preservada ao reiniciar. `ORIGINAL_IMAGES_PATH` fornece
+a pasta inicial quando ainda não existe uma lista salva; não substitui essa lista.
 
 ```text
 ORIGINAL_IMAGES_PATH=/Volumes/Estampas
@@ -207,7 +209,7 @@ para HNSW/IVF pode ser feita sem mudar o catálogo JSONL.
 
 ## Estrutura esperada das estampas
 
-Selecione um diretório raiz. Ele pode ter quantas subpastas forem necessárias:
+Adicione uma ou mais pastas de entrada. Cada uma pode ter quantas subpastas forem necessárias:
 
 ```text
 Estampas/
@@ -418,7 +420,9 @@ Ajustes do Sistema > Privacidade e Segurança > Abrir Mesmo Assim
 
 1. Escolha `Planilha Excel` e clique em `Selecionar Excel`, ou escolha `Texto CSV`
    e cole os pedidos.
-2. Clique em `Selecionar raiz` e escolha o diretório raiz das estampas.
+2. Clique em `Adicionar pasta` para cada pasta de entrada das estampas. Para retirar
+   entradas, selecione-as na lista e clique em `Remover selecionadas`. Depois de
+   alterar as entradas, atualize o índice para mapear a lista atual.
 3. Escolha a pasta de saída.
 4. Clique em `ATUALIZAR ÍNDICE`. A mesma ação faz scans incrementais posteriores e
    identifica arquivos novos, alterados, ausentes, movidos ou renomeados.

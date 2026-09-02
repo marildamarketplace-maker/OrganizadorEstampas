@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import logging
 import os
 import threading
 import tkinter as tk
@@ -85,7 +86,7 @@ class App:
         self.collector_status_var = tk.StringVar(
             value="Selecione as entradas, os formatos e a pasta de saída."
         )
-        self.status_var = tk.StringVar(value="Selecione a planilha e as pastas.")
+        self.status_var = tk.StringVar(value="Pronto para atualizar o índice ou gerar previews.")
         self.index_status_var = tk.StringVar(value="Índice ainda não carregado.")
         self.semantic_enabled_var = tk.BooleanVar(
             value=bool(self.config.get("semantic_search_enabled", False))
@@ -253,7 +254,7 @@ class App:
         index_frame = ttk.LabelFrame(main, text="2. Índice das estampas", padding=16)
         index_frame.pack(fill="x", pady=16)
 
-        ttk.Label(index_frame, textvariable=self.index_status_var).pack(anchor="w")
+        ttk.Label(index_frame, textvariable=self.index_status_var, wraplength=760).pack(anchor="w")
         ttk.Label(
             index_frame,
             text="Atualização local: verifica as pastas e atualiza o catálogo. "
@@ -322,11 +323,11 @@ class App:
         # os métodos existentes, mas fora do layout da aba Mapear estampas.
         process_frame = ttk.LabelFrame(main, text="3. Gerar pastas dos pedidos", padding=16)
 
-        self.progress = ttk.Progressbar(process_frame, mode="determinate", maximum=100)
-        self.progress.pack(fill="x", pady=(0, 10))
+        self.progress = ttk.Progressbar(index_frame, mode="determinate", maximum=100)
+        self.progress.pack(fill="x", pady=(12, 10))
 
         ttk.Label(
-            process_frame, textvariable=self.status_var, wraplength=760
+            index_frame, textvariable=self.status_var, wraplength=760
         ).pack(anchor="w")
 
         self.log = tk.Text(process_frame, height=10, state="disabled", wrap="word")
@@ -1643,10 +1644,14 @@ class App:
     def _preview_generation_progress(self, current, total, message):
         self.progress.configure(value=(current / total * 100) if total else 0)
         self.status_var.set(message)
+        self._log(message)
 
     def _preview_generation_complete(self, result):
         self.progress.configure(value=100 if result.pending else 0)
-        self.status_var.set("Geração local de previews concluída.")
+        self.status_var.set(
+            f"Previews finalizados: {result.completed:,} concluídos; {result.failed:,} falhas "
+            f"em {result.elapsed_seconds:.1f}s."
+        )
         self._finish_controllable_operation()
         self._refresh_catalog_statistics()
         messagebox.showinfo(
@@ -1819,6 +1824,8 @@ class App:
             self.root.after(0, self._show_error, str(exc))
 
     def _index_progress(self, count, message):
+        # O painel legado de pedidos fica oculto; este rótulo está na aba visível.
+        self.index_status_var.set(message)
         self.status_var.set(message)
         self._log(message)
 
@@ -2197,6 +2204,7 @@ class App:
         self._collector_log("Cancelamento solicitado. Finalizando o arquivo atual...")
 
     def _show_error(self, message):
+        logging.getLogger(__name__).error("Falha na operação | motivo: %s", message)
         self.progress.stop()
         self.progress.configure(mode="determinate", value=0)
         self.status_var.set("Ocorreu um erro.")

@@ -22,6 +22,8 @@ if errorlevel 1 goto :erro
 "%VENV_PY%" -m PyInstaller --noconfirm --clean --windowed ^
     --hidden-import faiss ^
     --hidden-import openai ^
+    --collect-all pypdfium2 ^
+    --collect-all pypdfium2_raw ^
     --hidden-import google.cloud.storage ^
     --hidden-import google.oauth2.service_account ^
     --exclude-module torch ^

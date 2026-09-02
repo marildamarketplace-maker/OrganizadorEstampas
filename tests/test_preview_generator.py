@@ -6,15 +6,101 @@ import time
 import unittest
 from unittest.mock import patch
 
-from PIL import Image
+from PIL import Image, ImageCms
 from PIL import features
 
 import meury_app.indexer as indexer_module
 from meury_app.indexer import build_index, load_index_payload
-from meury_app.preview_generator import generate_pending_previews
+from meury_app.preview_generator import create_preview, generate_pending_previews
 
 
 class PreviewGeneratorTest(unittest.TestCase):
+    def test_keeps_exif_orientation_and_icc_after_resizing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "orientada.jpg"
+            profile = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+            with Image.new("RGB", (2400, 1200), "red") as original:
+                original.paste("blue", (1200, 0, 2400, 1200))
+                exif = Image.Exif()
+                exif[274] = 6
+                original.save(source, exif=exif, icc_profile=profile)
+            output = create_preview({"path": str(source)}, preview_dir=root / "previews")
+            with Image.open(output) as preview:
+                self.assertEqual(preview.size, (512, 1024))
+                self.assertEqual(preview.info["icc_profile"], profile)
+                top = preview.convert("RGB").getpixel((256, 100))
+                bottom = preview.convert("RGB").getpixel((256, 900))
+                self.assertGreater(top[0], top[2] + 100)
+                self.assertGreater(bottom[2], bottom[0] + 100)
+
+    def test_preserves_transparency_and_uses_white_in_jpeg_fallback(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "transparente.png"
+            with Image.new("RGBA", (1200, 600), (255, 0, 0, 0)) as original:
+                original.paste((0, 0, 255, 255), (400, 200, 800, 400))
+                original.save(source)
+            if features.check("webp"):
+                output = create_preview({"path": str(source)}, preview_dir=root / "webp")
+                with Image.open(output) as preview:
+                    self.assertEqual(preview.mode, "RGBA")
+                    self.assertEqual(preview.getpixel((0, 0))[3], 0)
+                    self.assertEqual(preview.getpixel((512, 256))[3], 255)
+            with patch("PIL.features.check", return_value=False):
+                output = create_preview({"path": str(source)}, preview_dir=root / "jpeg")
+            with Image.open(output) as preview:
+                self.assertEqual(preview.format, "JPEG")
+                self.assertTrue(all(channel > 240 for channel in preview.getpixel((0, 0))))
+
+    def test_recovers_existing_preview_and_rebuilds_a_corrupt_cache(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "imagem.png"
+            Image.new("RGB", (1200, 600), "green").save(source)
+            record = {
+                "path": str(source), "content_hash": hashlib.sha256(source.read_bytes()).hexdigest(),
+                "size": source.stat().st_size, "mtime_ns": source.stat().st_mtime_ns,
+            }
+            preview = create_preview(record, preview_dir=root / "previews")
+            with patch("PIL.Image.Image.save", side_effect=AssertionError("preview deveria ser reutilizado")):
+                self.assertEqual(create_preview(record, preview_dir=root / "previews"), preview)
+            preview.write_bytes(b"preview interrompido")
+            create_preview(record, preview_dir=root / "previews")
+            with Image.open(preview) as image:
+                image.load()
+                self.assertEqual(image.size, (1024, 512))
+            source.write_bytes(source.read_bytes() + b"changed")
+            with self.assertRaisesRegex(ValueError, "original mudou"):
+                create_preview(record, preview_dir=root / "previews")
+
+    def test_invalid_content_hash_cannot_escape_preview_directory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "imagem.png"
+            Image.new("RGB", (20, 20), "green").save(source)
+            output = create_preview(
+                {"path": str(source), "content_hash": "../../outside", "relative_path": "imagem.png"},
+                preview_dir=root / "previews",
+            )
+            self.assertEqual(output.parent, (root / "previews").resolve())
+
+    def test_rejects_original_changed_during_generation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "imagem.png"
+            Image.new("RGB", (20, 20), "green").save(source)
+            save = Image.Image.save
+
+            def save_and_change(image, *args, **kwargs):
+                save(image, *args, **kwargs)
+                source.write_bytes(source.read_bytes() + b"alterado")
+
+            with patch.object(Image.Image, "save", new=save_and_change):
+                with self.assertRaisesRegex(ValueError, "mudou durante"):
+                    create_preview({"path": str(source)}, preview_dir=root / "previews")
+            self.assertEqual(list((root / "previews").iterdir()), [])
+
     def catalog_files(self, root):
         return (
             patch.object(indexer_module, "INDEX_FILE", root / "indice.jsonl"),

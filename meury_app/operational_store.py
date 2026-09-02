@@ -7,6 +7,8 @@ from contextlib import closing
 import sqlite3
 import time
 
+from .index_progress import IndexProgress
+
 
 SCHEMA_VERSION = 8
 STATE_COLUMNS = (
@@ -194,7 +196,7 @@ def _values(record: dict, now: str) -> tuple:
     )
 
 
-def sync_records(db_path: Path, records: list[dict]) -> None:
+def sync_records(db_path: Path, records: list[dict], *, progress: IndexProgress | None = None) -> None:
     """Migra ou atualiza registros em uma transação idempotente."""
     now = time.strftime("%Y-%m-%d %H:%M:%S")
     columns = (
@@ -215,18 +217,25 @@ def sync_records(db_path: Path, records: list[dict]) -> None:
         f"({','.join('?' for _ in range(45))}) "
         f"ON CONFLICT(source, relative_path) DO UPDATE SET {assignments}"
     )
+    def values_to_write():
+        for current, record in enumerate(records, 1):
+            yield _values(record, now) + (now,)
+            if progress:
+                progress.report("Persistindo estado local", current, len(records))
+
+    if progress:
+        progress.report("Persistindo estado local", 0, len(records))
     with closing(_connect(db_path)) as connection, connection:
         ensure_schema(connection)
-        connection.executemany(
-            sql,
-            (values + (now,) for values in (_values(record, now) for record in records)),
-        )
+        connection.executemany(sql, values_to_write())
+    if progress:
+        progress.report("Persistindo estado local", len(records), len(records), force=True)
 
 
-def overlay_records(db_path: Path, records: list[dict]) -> None:
+def overlay_records(db_path: Path, records: list[dict], *, progress: IndexProgress | None = None) -> None:
     """Aplica o estado SQLite sobre registros do catálogo sem mudar seus consumidores."""
     if not db_path.exists():
-        sync_records(db_path, records)
+        sync_records(db_path, records, progress=progress)
         return
     by_identity = {
         (int(record.get("source", 0)), str(record.get("relative_path", "")).replace("\\", "/").casefold()): record
@@ -234,7 +243,13 @@ def overlay_records(db_path: Path, records: list[dict]) -> None:
     }
     with closing(_connect(db_path)) as connection, connection:
         ensure_schema(connection)
+        current = 0
+        if progress:
+            progress.report("Carregando estado local", 0, len(records))
         for row in connection.execute("SELECT * FROM image_state"):
+            # sqlite3.Row busca colunas por nome linearmente. Converta uma vez
+            # por linha para não repetir essa busca para cada campo de estado.
+            row = dict(zip(row.keys(), row))
             record = by_identity.get((int(row["source"]), str(row["relative_path"])))
             if record is None:
                 continue
@@ -252,6 +267,9 @@ def overlay_records(db_path: Path, records: list[dict]) -> None:
                     record[column] = bool(value)
                 else:
                     record[column] = value
+            current += 1
+            if progress:
+                progress.report("Carregando estado local", current, len(records))
 
 
 def record_quarantine_issues(db_path: Path, issues: list[dict]) -> None:

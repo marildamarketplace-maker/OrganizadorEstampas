@@ -1,0 +1,19 @@
+{
+  "platform": "macOS-26.3-arm64-arm-64bit-Mach-O",
+  "python": "3.13.14",
+  "fixture": "3000x2000 pixels, JPEG/PNG com alpha/TIFF; desenhos sintéticos, disco local",
+  "result": {
+    "pending": 60,
+    "completed": 60,
+    "failed": 0,
+    "elapsed_seconds": 3.0131828329995187
+  },
+  "wall_seconds": 3.0132352920009,
+  "previews_per_second": 19.91215228338766,
+  "preview_bytes": 12784828,
+  "progress_events": 7,
+  "originals_unchanged": true,
+  "last_message": "Previews: 60/60 (100.0% do lote) | Concluídos: 60; falhas: 0 | Prontos no catálogo: 60 | Lote finalizado; resultados salvos",
+  "limitations": "Amostra sintética; não é uma execução de 195 mil previews nem uma previsão para o HD real.",
+  "peak_rss_mib": 224.9375
+}

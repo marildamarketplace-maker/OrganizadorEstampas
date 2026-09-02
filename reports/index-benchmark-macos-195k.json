@@ -1,0 +1,53 @@
+{
+  "platform": "macOS-26.3-arm64-arm-64bit-Mach-O",
+  "python": "3.13.14",
+  "fixture": "arquivos JPEG reais de 32x32 pixels, em disco temporário local",
+  "count": 195000,
+  "setup_seconds": 14.802895499999067,
+  "catalog_bytes": 262549357,
+  "full": {
+    "total_files": 195000,
+    "indexed_names": 195000,
+    "duplicates": 0,
+    "source_dirs": 1,
+    "elapsed_seconds": 72.3910361670005,
+    "duplicates_log": null
+  },
+  "unchanged": {
+    "scanned_files": 195000,
+    "added_files": 0,
+    "indexed_names": 195000,
+    "duplicates": 0,
+    "source_dirs": 1,
+    "elapsed_seconds": 16.355435875000694,
+    "duplicates_log": null,
+    "removed_files": 0,
+    "moved_files": 0,
+    "changed_files": 0,
+    "unchanged_files": 195000,
+    "verification_files": 0,
+    "hashed_files": 0,
+    "errors": 0,
+    "review_files": 0
+  },
+  "changed": {
+    "scanned_files": 194990,
+    "added_files": 0,
+    "indexed_names": 194990,
+    "duplicates": 0,
+    "source_dirs": 1,
+    "elapsed_seconds": 17.606914666999728,
+    "duplicates_log": null,
+    "removed_files": 10,
+    "moved_files": 10,
+    "changed_files": 10,
+    "unchanged_files": 194970,
+    "verification_files": 10,
+    "hashed_files": 20,
+    "errors": 0,
+    "review_files": 0
+  },
+  "progress_events": 131,
+  "limitations": "Não representa leitura de originais grandes, HD externo ou compartilhamento de rede.",
+  "peak_rss_mib": 1359.5
+}

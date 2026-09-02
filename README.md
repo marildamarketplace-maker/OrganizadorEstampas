@@ -77,6 +77,46 @@ arquivos como `6236-a-1`, `6236-a-modelo` e `6236-a-mockup` são enviados sem
 colisão. Seus previews usam chaves GCS distintas no formato
 `estampas/6236/A/6236-a-1-<hash-curto>/preview.webp`.
 
+### Geração de previews em acervos grandes
+
+Os previews mantêm o limite de 1024 px, o perfil ICC e a orientação EXIF. O WebP
+mantém qualidade 86 e usa `method=4` para reduzir o tempo de compressão, com possível
+aumento do tamanho dos derivados. A imagem é reduzida antes da transposição EXIF,
+evitando uma cópia do original inteiro. Os originais são abertos apenas para leitura.
+
+PDFs também recebem preview: somente a primeira página é rasterizada, diretamente
+com até 1024 px, mantendo um derivado por arquivo. O `pypdfium2` é instalado pelo
+inicializador e incluído nos builds macOS/Windows, sem exigir Poppler ou Ghostscript
+no computador do usuário. Chamadas ao PDFium são serializadas por segurança; a
+compressão dos derivados e as imagens raster continuam no pool de workers. PDFs
+corrompidos ou protegidos por senha registram a razão da falha. PDFs que falharam
+por falta de suporte são tentados novamente ao clicar em **Gerar previews pendentes**.
+
+A geração usa **2 workers** por padrão e mantém no máximo essa quantidade de imagens
+em processamento. `MEURY_PREVIEW_WORKERS=1` reduz o uso de RAM e pode ajudar em HDs
+lentos; `MEURY_PREVIEW_WORKERS=4` permite experimentar mais paralelismo em SSD e
+máquinas com RAM disponível. O intervalo aceito é de 1 a 4. O SQLite recebe os estados
+pelo coordenador, em lotes de até aproximadamente 32 registros ou a cada segundo,
+conforme os itens terminam. Pausar drena os trabalhos iniciados e salva os resultados
+antes de aguardar a continuação. Depois de uma interrupção, previews válidos já
+gravados podem ser reaproveitados mesmo quando seu estado ainda não foi salvo.
+
+A barra e o status ficam visíveis na aba **Mapear estampas**. A interface
+exibe itens processados/total do lote, percentual, previews concluídos, falhas,
+total pronto no catálogo, itens/segundo, tempo restante e horário estimado de término.
+A estimativa usa a média observada e exclui pausas; pode oscilar conforme tamanho,
+formato das próximas imagens e velocidade do HD. Ela se refere ao lote selecionado.
+O terminal exibe somente falhas, com o arquivo afetado e o motivo.
+
+Benchmark isolado com originais sintéticos JPEG, PNG com alpha e TIFF de 3000×2000:
+
+```sh
+python scripts/benchmark_previews.py --count 60 --output reports/preview-benchmark.json
+```
+
+Esse comando verifica dimensões dos derivados, integridade dos originais e retomada
+sem trabalho pendente. A amostra não substitui uma medição no acervo e no HD reais.
+
 ### Teste local do núcleo
 
 ```bash
@@ -195,6 +235,33 @@ O aplicativo foi preparado para catálogos da ordem de 195 mil imagens:
 - miniaturas são persistentes e invalidadas automaticamente quando o arquivo muda;
 - JSONL e índices FAISS são substituídos atomicamente, reduzindo o risco de índice
   corrompido após uma interrupção.
+
+**Atualizar índice** mostra o progresso no rótulo visível do índice, com
+atualizações no máximo uma vez por segundo dentro de cada
+etapa. A varredura informa quantos arquivos foram verificados e quantos são novos,
+inalterados ou alterados. O total da pasta só é conhecido ao finalizar a varredura:
+não se percorre o HD duas vezes apenas para calcular uma porcentagem. Leitura de
+catálogos novos, SHA-256 e persistência exibem quantidade/total e porcentagem da
+respectiva etapa. A conclusão geral só é informada depois de salvar os dados.
+O terminal fica reservado às falhas, informando o arquivo e o motivo.
+
+O aviso `DecompressionBombWarning` do Pillow é silenciado somente na validação do
+índice. Arquivos corrompidos e o erro de proteção `DecompressionBombError` continuam
+sendo detectados. Arquivos inalterados não são reabertos nem recalculam SHA-256;
+o JSONL também não é regravado quando não há alterações.
+
+Para medir o fluxo com arquivos reais temporários, sem usar o catálogo pessoal:
+
+```sh
+python scripts/benchmark_index.py --count 195000 --output reports/index-benchmark.json
+```
+
+No Windows, pode-se usar `.venv\Scripts\python.exe` no lugar de `python`. A medição
+executa criação, atualização sem alterações e atualização com alterações,
+renomeações e exclusões. Os JPEGs são pequenos (32×32); os tempos não estimam o
+custo de ler originais grandes em HD externo ou rede. O workflow de Windows executa
+os testes e essa carga em um runner nativo antes de empacotar o aplicativo e
+disponibiliza o relatório como artefato.
 
 A área **Estatísticas do catálogo** é atualizada em segundo plano e informa total de
 imagens, presença/ausência de palavras-chave, embeddings semânticos, pendências e

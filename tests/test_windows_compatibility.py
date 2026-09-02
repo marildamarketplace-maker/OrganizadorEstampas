@@ -20,6 +20,8 @@ class WindowsCompatibilityTest(unittest.TestCase):
         self.assertIn("--hidden-import google.cloud.storage", text)
         self.assertIn("--hidden-import google.oauth2.service_account", text)
         self.assertIn("--hidden-import faiss", text)
+        self.assertIn("--collect-all pypdfium2", text)
+        self.assertIn("--collect-all pypdfium2_raw", text)
         self.assertIn("--exclude-module torch", text)
         self.assertIn("--exclude-module transformers", text)
         self.assertIn("meury_app.dependency_setup core", text)

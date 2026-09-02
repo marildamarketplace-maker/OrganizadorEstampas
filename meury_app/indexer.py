@@ -5,9 +5,11 @@ from pathlib import Path
 from typing import Iterator
 import json
 import hashlib
+import logging
 import os
 import tempfile
 import time
+import warnings
 
 from .config import (
     ANALYSIS_RESULTS_FILE,
@@ -21,6 +23,7 @@ from .config import (
     resolve_record_path,
 )
 from .asset_identity import relative_asset_identity
+from .index_progress import IndexProgress
 from .operational_store import (
     overlay_records, record_quarantine_issues, record_scan_summary, sync_records,
 )
@@ -273,8 +276,12 @@ def _validate_file_content(path: Path) -> tuple[str, str] | None:
                     return "CORRUPTED_FILE", "O arquivo não possui cabeçalho PDF válido."
         else:
             from PIL import Image
-            with Image.open(path) as image:
-                image.verify()
+            # Silencia apenas o aviso de dimensões nesta operação. O limite de
+            # erro e a detecção de arquivos corrompidos continuam ativos.
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", Image.DecompressionBombWarning)
+                with Image.open(path) as image:
+                    image.verify()
     except Exception as exc:
         return "CORRUPTED_FILE", f"{type(exc).__name__}: {exc}"
     return None
@@ -309,7 +316,7 @@ def _make_record(
     return record
 
 
-def _read_jsonl(path: Path) -> tuple[dict, list[dict]] | None:
+def _read_jsonl(path: Path, progress: IndexProgress | None = None) -> tuple[dict, list[dict]] | None:
     try:
         with path.open(encoding="utf-8") as stream:
             header = json.loads(next(stream))
@@ -326,6 +333,8 @@ def _read_jsonl(path: Path) -> tuple[dict, list[dict]] | None:
                 if record.get("type") == "image":
                     _ensure_record_defaults(record)
                     records.append(record)
+                    if progress:
+                        progress.report("Carregando catálogo", len(records), header.get("record_count"))
             return header, records
     except (OSError, StopIteration, json.JSONDecodeError, TypeError, ValueError):
         return None
@@ -403,26 +412,31 @@ def _read_legacy_index() -> tuple[dict, list[dict]] | None:
         return None
 
 
-def _load_catalog(source_dirs: list[Path] | None = None) -> tuple[dict, list[dict]] | None:
-    loaded = _read_jsonl(INDEX_FILE) if INDEX_FILE.exists() else None
+def _load_catalog(source_dirs: list[Path] | None = None,
+                  progress: IndexProgress | None = None) -> tuple[dict, list[dict]] | None:
+    if progress:
+        progress.report("Carregando catálogo")
+    loaded = _read_jsonl(INDEX_FILE, progress) if INDEX_FILE.exists() else None
     if loaded is None and INDEX_FILE.parent == LEGACY_INDEX_FILE.parent:
         loaded = _read_legacy_index()
     if loaded is None:
         return None
     header, records = loaded
     _apply_analysis_results(records)
-    overlay_records(_operational_db_path(), records)
+    overlay_records(_operational_db_path(), records, progress=progress)
     if source_dirs is not None:
         saved_sources = header.get("source_dirs", [])
         # Caminhos relativos permitem troca da letra/unidade do HD. A ordem das
         # raízes configuradas funciona como identidade local simples.
         if len(saved_sources) != len(source_dirs):
             return None
-        for record in records:
+        for current, record in enumerate(records, 1):
             source_number = int(record.get("source", 0))
             if source_number >= len(source_dirs):
                 return None
             record["path"] = str(resolve_record_path(record, source_dirs))
+            if progress:
+                progress.report("Resolvendo caminhos", current, len(records))
     return header, records
 
 
@@ -445,6 +459,7 @@ def _index_from_records(records: list[dict]) -> dict[str, list[str]]:
 
 def _write_catalog(
     records: list[dict], sources: list[Path], *, operational_records: list[dict] | None = None,
+    progress: IndexProgress | None = None,
 ) -> None:
     ensure_app_dir()
     header = {
@@ -452,6 +467,7 @@ def _write_catalog(
         # A raiz física pertence à configuração, nunca à identidade persistida.
         "source_dirs": [str(number) for number, _source in enumerate(sources)],
         "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "record_count": len(records),
     }
     temporary_name = None
     try:
@@ -461,16 +477,19 @@ def _write_catalog(
         ) as stream:
             temporary_name = stream.name
             stream.write(json.dumps(header, ensure_ascii=False) + "\n")
-            for record in records:
+            for current, record in enumerate(records, 1):
                 persisted = dict(record)
                 persisted["path"] = str(record.get("relative_path", "")).replace("\\", "/")
                 stream.write(json.dumps(persisted, ensure_ascii=False) + "\n")
+                if progress:
+                    progress.report("Gravando catálogo", current, len(records))
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary_name, INDEX_FILE)
         sync_records(
             _operational_db_path(),
             records if operational_records is None else operational_records,
+            progress=progress,
         )
         # Os eventos já foram incorporados aos registros escritos acima.
         ANALYSIS_RESULTS_FILE.unlink(missing_ok=True)
@@ -528,10 +547,11 @@ def load_index_payload(source_dirs: Path | list[Path] | None = None) -> dict | N
 
 def load_catalog_records(
     source_dirs: Path | list[Path] | None = None,
+    *, progress: IndexProgress | None = None,
 ) -> list[dict] | None:
     """Carrega registros sem construir o dicionário de busca usado por pedidos."""
     sources = normalize_source_dirs(source_dirs) if source_dirs is not None else None
-    loaded = _load_catalog(sources)
+    loaded = _load_catalog(sources, progress)
     return loaded[1] if loaded is not None else None
 
 
@@ -554,6 +574,7 @@ def index_catalog_available(source_dirs: Path | list[Path]) -> bool:
 
 def _scan_and_merge(
     sources: list[Path], old_records: list[dict], progress_callback=None,
+    *, progress: IndexProgress | None = None,
 ) -> tuple[list[dict], dict, int, list[dict], list[dict]]:
     """Varre o disco e mescla em fluxo, sem manter dois catálogos completos.
 
@@ -561,6 +582,8 @@ def _scan_and_merge(
     atualização de 195 mil arquivos não cria simultaneamente as listas
     ``anterior``, ``atual`` e ``mesclada`` com dicionários independentes.
     """
+    progress = progress or IndexProgress(progress_callback)
+    progress.report("Verificando imagens", detail="total conhecido ao terminar a varredura")
     old_by_path = {_record_identity(record): record for record in old_records}
     matched, new_records, removed = [], [], []
     dirty_records: list[dict] = []
@@ -573,6 +596,9 @@ def _scan_and_merge(
     }
 
     def add_issue(source_number: int, source: Path, path: Path, reason: str, message: str):
+        logging.getLogger(__name__).error(
+            "Falha na indexação | arquivo: %s | motivo: %s: %s", path, reason, message,
+        )
         try:
             relative = path.relative_to(source).as_posix()
         except ValueError:
@@ -644,8 +670,8 @@ def _scan_and_merge(
                     dirty_records.append(old)
                 matched.append(old)
                 stats["unchanged"] += 1
-                if progress_callback and scanned % 250 == 0:
-                    progress_callback(scanned, f"Verificando: {scanned:,} imagens")
+                progress.report("Verificando imagens", scanned,
+                                detail=f"Novas: {len(new_records):,}; inalteradas: {stats['unchanged']:,}; alteradas: {stats['changed']:,}")
                 continue
 
             record = _make_record(
@@ -727,8 +753,11 @@ def _scan_and_merge(
                     record["scan_status"] = "reappeared"
                 matched.append(record)
                 dirty_records.append(record)
-            if progress_callback and scanned % 250 == 0:
-                progress_callback(scanned, f"Verificando: {scanned:,} imagens")
+            progress.report("Verificando imagens", scanned,
+                            detail=f"Novas: {len(new_records):,}; inalteradas: {stats['unchanged']:,}; alteradas: {stats['changed']:,}")
+
+    progress.report("Verificando imagens", scanned, scanned, force=True,
+                    detail=f"Novas: {len(new_records):,}; inalteradas: {stats['unchanged']:,}; alteradas: {stats['changed']:,}")
 
     for old in old_by_path.values():
         if old.get("active", True):
@@ -738,7 +767,8 @@ def _scan_and_merge(
 
     # Novos arquivos recebem hash uma única vez. O movimento automático só é
     # aceito quando o SHA-256 forma um par inequívoco de 1 origem para 1 destino.
-    for record in new_records:
+    progress.report("Calculando SHA-256 dos novos", 0, len(new_records))
+    for current, record in enumerate(new_records, 1):
         try:
             record["content_hash"] = calculate_content_hash(Path(record["path"]))
             record["last_error"] = ""
@@ -746,6 +776,10 @@ def _scan_and_merge(
         except OSError as exc:
             record["last_error"] = f"SHA-256: {exc}"
             mark_attention(record, "INACCESSIBLE_FILE", f"SHA-256: {exc}")
+        progress.report("Calculando SHA-256 dos novos", current, len(new_records))
+
+    progress.report("Calculando SHA-256 dos novos", len(new_records), len(new_records), force=True)
+    progress.report("Conciliando movimentos e ausências", scanned)
 
     removed_by_hash: dict[str, list[dict]] = {}
     new_by_hash: dict[str, list[dict]] = {}
@@ -836,7 +870,10 @@ def _scan_and_merge(
     for record in matched:
         if record.get("active", True):
             by_key.setdefault(str(record.get("key", "")), []).append(record)
-    for duplicates in by_key.values():
+    dirty_ids = {id(record) for record in dirty_records}
+    progress.report("Verificando duplicidades", 0, len(by_key))
+    for current, duplicates in enumerate(by_key.values(), 1):
+        progress.report("Verificando duplicidades", current, len(by_key))
         if len(duplicates) < 2:
             continue
         paths = " | ".join(str(record.get("path", "")) for record in duplicates)
@@ -845,43 +882,47 @@ def _scan_and_merge(
                 record, "UNEXPECTED_DUPLICATE",
                 f"Mais de um arquivo ativo possui a mesma chave: {paths}",
             )
-            if changed_attention and record not in dirty_records:
+            if changed_attention and id(record) not in dirty_ids:
                 dirty_records.append(record)
+                dirty_ids.add(id(record))
     return matched, stats, scanned, dirty_records, quarantine_issues
 
 
 def build_index(source_dirs, progress_callback=None) -> tuple[dict[str, list[str]], IndexResult]:
     sources = validate_source_dirs(source_dirs)
-    started = time.time()
-    previous = _load_catalog(sources)
+    started = time.monotonic()
+    progress = IndexProgress(progress_callback)
+    previous = _load_catalog(sources, progress)
     records, _stats, scanned, _dirty_records, quarantine_issues = _scan_and_merge(
-        sources, previous[1] if previous else [], progress_callback
+        sources, previous[1] if previous else [], progress=progress
     )
     index = _index_from_records(records)
-    _write_catalog(records, sources)
+    _write_catalog(records, sources, progress=progress)
     record_quarantine_issues(_operational_db_path(), quarantine_issues)
     duplicates_log = _write_duplicates(index)
+    progress.report("Índice concluído", scanned, scanned, force=True)
     return index, IndexResult(
         scanned, len(index), sum(len(value) > 1 for value in index.values()),
-        len(sources), time.time() - started, duplicates_log,
+        len(sources), time.monotonic() - started, duplicates_log,
     )
 
 
 def update_index_incremental(source_dirs, progress_callback=None):
     sources = validate_source_dirs(source_dirs)
-    previous = _load_catalog(sources)
+    started = time.monotonic()
+    progress = IndexProgress(progress_callback)
+    previous = _load_catalog(sources, progress)
     if previous is None:
         raise ValueError(
             "Ainda não existe um índice completo para estas pastas. "
             "Clique primeiro em Atualizar índice completo."
         )
-    started = time.time()
     records, stats, scanned, dirty_records, quarantine_issues = _scan_and_merge(
-        sources, previous[1], progress_callback
+        sources, previous[1], progress=progress
     )
     index = _index_from_records(records)
     if dirty_records:
-        _write_catalog(records, sources, operational_records=dirty_records)
+        _write_catalog(records, sources, operational_records=dirty_records, progress=progress)
         duplicates_log = _write_duplicates(index)
     else:
         duplicates_log = str(DUPLICATES_LOG_FILE.resolve()) if DUPLICATES_LOG_FILE.exists() else None
@@ -889,7 +930,7 @@ def update_index_incremental(source_dirs, progress_callback=None):
     result = IncrementalIndexResult(
         scanned_files=scanned, added_files=stats["added"],
         indexed_names=len(index), duplicates=sum(len(value) > 1 for value in index.values()),
-        source_dirs=len(sources), elapsed_seconds=time.time() - started,
+        source_dirs=len(sources), elapsed_seconds=time.monotonic() - started,
         duplicates_log=duplicates_log, removed_files=stats["removed"],
         moved_files=stats["moved"], changed_files=stats["changed"],
         unchanged_files=stats["unchanged"],
@@ -899,6 +940,8 @@ def update_index_incremental(source_dirs, progress_callback=None):
         review_files=stats["review"],
     )
     record_scan_summary(_operational_db_path(), result)
+    progress.report("Índice concluído", scanned, scanned, force=True,
+                    detail=f"Novos: {stats['added']:,}; inalterados: {stats['unchanged']:,}; erros: {stats['errors']:,}")
     return index, result
 
 

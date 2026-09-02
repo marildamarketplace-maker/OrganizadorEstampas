@@ -24,8 +24,35 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Validar testes em Windows nativo
+        shell: pwsh
+        run: |
+          $env:MEURY_APP_DATA_PATH = Join-Path $env:RUNNER_TEMP "meury-tests"
+          python -m unittest discover -s tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Validar índice com 195 mil arquivos em Windows
+        run: python scripts/benchmark_index.py --count 195000 --output reports/index-benchmark-windows-195k.json
+
+      - name: Disponibilizar medição do índice
+        uses: actions/upload-artifact@v4
+        with:
+          name: index-benchmark-windows-195k
+          path: reports/index-benchmark-windows-195k.json
+          if-no-files-found: error
+
+      - name: Validar previews em Windows
+        run: python scripts/benchmark_previews.py --count 60 --output reports/preview-benchmark-windows.json
+
+      - name: Disponibilizar medição dos previews
+        uses: actions/upload-artifact@v4
+        with:
+          name: preview-benchmark-windows
+          path: reports/preview-benchmark-windows.json
+          if-no-files-found: error
+
       - name: Gerar aplicativo
-        run: pyinstaller --noconfirm --clean --windowed --name "OrganizadorEstampasMeury" app.py
+        run: pyinstaller --noconfirm --clean --windowed --collect-all pypdfium2 --collect-all pypdfium2_raw --name "OrganizadorEstampasMeury" app.py
 
       - name: Disponibilizar aplicativo
         uses: actions/upload-artifact@v4

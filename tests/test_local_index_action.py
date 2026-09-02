@@ -55,6 +55,17 @@ class LocalIndexActionTest(unittest.TestCase):
         app.operation_pause_event.set.assert_called_once_with()
         app.operation_pause_button.configure.assert_called_with(state="normal")
 
+    def test_preview_progress_shows_counts_and_eta(self):
+        app = App.__new__(App)
+        app.progress = Mock()
+        app.status_var = Mock()
+        app._log = Mock()
+        message = "Previews: 50/100 (50%) | Término estimado: 02/09 18:30:00"
+        app._preview_generation_progress(50, 100, message)
+        app.progress.configure.assert_called_once_with(value=50)
+        app.status_var.set.assert_called_once_with(message)
+        app._log.assert_called_once_with(message)
+
 
 if __name__ == "__main__":
     unittest.main()

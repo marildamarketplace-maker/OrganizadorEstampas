@@ -43,6 +43,45 @@ class JsonlIndexTest(unittest.TestCase):
             patch.object(indexer_module, "ensure_app_dir"),
         )
 
+    def test_scan_ignores_network_entry_with_invalid_name(self):
+        """Uma entrada defeituosa do compartilhamento não pode abortar o scan."""
+        class InvalidEntry:
+            path = "."
+
+            def is_dir(self, follow_symlinks=False):
+                raise ValueError("Invalid name '.'")
+
+        class Entries:
+            def __enter__(self):
+                return iter([InvalidEntry()])
+
+            def __exit__(self, *_args):
+                return False
+
+        with patch.object(indexer_module.os, "scandir", return_value=Entries()):
+            self.assertEqual(list(indexer_module._iter_source_files(Path("artes"))), [])
+
+    def test_saves_an_atomic_checkpoint_every_thousand_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "artes" / "9000"
+            source.mkdir(parents=True)
+            for number in range(1000):
+                (source / f"9000-A-{number}.pdf").write_bytes(b"%PDF-1.4")
+            patches = self.catalog_files(root)
+            original_write = indexer_module._write_catalog
+            with patches[0], patches[1], patches[2], patches[3], patch.object(
+                indexer_module, "_write_catalog", wraps=original_write,
+            ) as write_catalog:
+                build_index(source.parent)
+
+            checkpoints = [
+                call for call in write_catalog.call_args_list
+                if call.kwargs.get("checkpoint")
+            ]
+            self.assertEqual(len(checkpoints), 1)
+            self.assertEqual(len(checkpoints[0].args[0]), 1000)
+
     def test_writes_jsonl_with_metadata_and_supports_jpeg(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -76,6 +115,47 @@ class JsonlIndexTest(unittest.TestCase):
             self.assertEqual(record["supabase_status"], "pending")
             self.assertFalse(record["missing_locally"])
             self.assertTrue(record["last_indexed_at"])
+
+    def test_uses_filename_code_when_customer_folder_has_no_design_code(self):
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "clientes"
+            variant_a = source / "wellington" / "MV1972.jpg"
+            variant_b = (
+                source / "THULIO REPRESENTANTE" / "VIA SAMPA" / "2023"
+                / "NOVEMBRO" / "MV20386-b.jpg"
+            )
+            variant_d = source / "THAÍS REPRESENTANTE" / "MV2782-D 100x100.jpg"
+            variant_a_with_size = (
+                source / "THAÍS REPRESENTANTE" / "PAULO RODOLFO"
+                / "MV25560 200x145.jpg"
+            )
+            for image in (variant_a, variant_b, variant_d, variant_a_with_size):
+                image.parent.mkdir(parents=True, exist_ok=True)
+                Image.new("RGB", (1, 1), "white").save(image)
+            patches = self.catalog_files(root)
+            with (
+                patches[0], patches[1], patches[2], patches[3],
+                patch.object(indexer_module, "ANALYSIS_RESULTS_FILE", root / "analises.jsonl"),
+            ):
+                index, _result = build_index(source)
+                records = load_index_payload(source)["records"]
+
+            self.assertIn(image_key("MV1972", "MV1972"), index)
+            self.assertIn(image_key("MV20386", "MV20386-b"), index)
+            self.assertIn(image_key("MV2782", "MV2782-D 100x100"), index)
+            self.assertIn(image_key("MV25560", "MV25560 200x145"), index)
+            by_name = {record["filename"]: record for record in records}
+            self.assertEqual(by_name["MV1972.jpg"]["codigo"], "MV1972")
+            self.assertEqual(by_name["MV1972.jpg"]["variante"], "A")
+            self.assertEqual(by_name["MV20386-b.jpg"]["codigo"], "MV20386")
+            self.assertEqual(by_name["MV20386-b.jpg"]["variante"], "B")
+            self.assertEqual(by_name["MV2782-D 100x100.jpg"]["codigo"], "MV2782")
+            self.assertEqual(by_name["MV2782-D 100x100.jpg"]["variante"], "D")
+            self.assertEqual(by_name["MV25560 200x145.jpg"]["codigo"], "MV25560")
+            self.assertEqual(by_name["MV25560 200x145.jpg"]["variante"], "A")
 
     def test_loads_version_7_and_supplies_new_state_metadata(self):
         with tempfile.TemporaryDirectory() as temporary:

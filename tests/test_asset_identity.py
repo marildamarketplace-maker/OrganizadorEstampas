@@ -19,6 +19,10 @@ class AssetIdentityTest(unittest.TestCase):
         self.assertNotEqual(relative_asset_identity(first), relative_asset_identity(second))
         self.assertNotEqual(storage_asset_segment(first), storage_asset_segment(second))
 
+    def test_invalid_dot_name_does_not_abort_identity_creation(self):
+        record = {"filename": ".", "relative_path": "."}
+        self.assertEqual(relative_asset_identity(record), ".")
+
 
 if __name__ == "__main__":
     unittest.main()

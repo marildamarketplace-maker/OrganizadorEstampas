@@ -18,7 +18,14 @@ def relative_asset_identity(record: dict) -> str:
         relative = PurePosixPath(filename)
     elif relative.name.casefold() != filename.casefold():
         relative = relative / filename
-    without_extension = relative.with_suffix("") if relative.suffix else relative
+    # Alguns compartilhamentos SMB expõem entradas com nome finalizado em ponto
+    # (inclusive "."). No Python 3.13, ``with_suffix("")`` rejeita esse nome.
+    # A identidade ainda pode ser usada com segurança sem remover a extensão,
+    # portanto essa anomalia jamais deve interromper uma indexação inteira.
+    try:
+        without_extension = relative.with_suffix("") if relative.suffix else relative
+    except ValueError:
+        without_extension = relative
     return without_extension.as_posix().casefold()
 
 

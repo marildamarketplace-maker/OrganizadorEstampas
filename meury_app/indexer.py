@@ -7,6 +7,7 @@ import json
 import hashlib
 import logging
 import os
+import re
 import tempfile
 import time
 import warnings
@@ -111,6 +112,26 @@ def design_id_from_folder(folder_name: str) -> str:
     return folder_name.strip().split(maxsplit=1)[0]
 
 
+def design_id_from_filename(filename: str) -> str:
+    """Extrai um código de estampa do começo do nome do arquivo.
+
+    Alguns acervos de clientes usam pastas organizacionais (por exemplo,
+    ``wellington``) em vez de uma pasta com o código da estampa.  Nesses casos,
+    aceita códigos que tenham pelo menos um número, como ``MV1972`` ou ``20386``.
+    """
+    stem = Path(filename).stem.strip()
+    match = re.match(r"^([A-Za-z]*\d+(?:-\d+)*)", stem)
+    return match.group(1) if match else ""
+
+
+def inferred_design_id(folder_name: str, filename: str) -> str:
+    """Prefere o código da pasta, usando o nome quando a pasta é organizacional."""
+    folder_id = design_id_from_folder(folder_name)
+    if variant_from_filename(folder_id, filename):
+        return folder_id
+    return design_id_from_filename(filename) or folder_id
+
+
 def normalize_source_dirs(source_dirs: Path | list[Path]) -> list[Path]:
     sources = [source_dirs] if isinstance(source_dirs, Path) else source_dirs
     normalized: list[Path] = []
@@ -148,6 +169,14 @@ def variant_from_filename(design_id: str, filename: str) -> str:
     """Infere a variante sem alterar a chave legada usada pelos pedidos."""
     stem = Path(filename).stem.strip()
     if stem.casefold() == design_id.casefold():
+        return "A"
+    # Medidas e descrições após o código não representam uma variante. Exemplo:
+    # ``MV25560 200x145.jpg`` é a variante A de MV25560.
+    if (
+        stem.casefold().startswith(design_id.casefold())
+        and len(stem) > len(design_id)
+        and stem[len(design_id)].isspace()
+    ):
         return "A"
     prefix = design_id + "-"
     if not stem.casefold().startswith(prefix.casefold()):
@@ -259,10 +288,18 @@ def _iter_source_files(source: Path, issue_callback=None) -> Iterator[Path]:
                                     Path(entry.path), "UNSUPPORTED_FORMAT",
                                     f"Extensão não suportada: {suffix or '(sem extensão)'}",
                                 )
+                    except ValueError:
+                        # Alguns compartilhamentos de rede podem expor uma entrada
+                        # com nome inválido para pathlib (por exemplo, "."). Ela
+                        # não representa uma imagem e não deve interromper o scan.
+                        continue
                     except OSError as exc:
                         if issue_callback:
                             issue_callback(Path(entry.path), "INACCESSIBLE_FILE", str(exc))
                         continue
+        except ValueError:
+            # Ignora somente o diretório inválido e segue com as demais pastas.
+            continue
         except OSError as exc:
             raise OSError(f"Não foi possível ler a pasta de estampas: {directory}") from exc
 
@@ -298,7 +335,7 @@ def _make_record(
             stat_result = path.stat()
         except OSError:
             return None
-    design_id = design_id_from_folder(relative.parts[-2])
+    design_id = inferred_design_id(relative.parts[-2], path.name)
     record = {
         "type": "image", "source": source_number,
         "relative_path": relative.as_posix(), "path": os.path.abspath(os.fspath(path)),
@@ -459,7 +496,7 @@ def _index_from_records(records: list[dict]) -> dict[str, list[str]]:
 
 def _write_catalog(
     records: list[dict], sources: list[Path], *, operational_records: list[dict] | None = None,
-    progress: IndexProgress | None = None,
+    progress: IndexProgress | None = None, checkpoint: bool = False,
 ) -> None:
     ensure_app_dir()
     header = {
@@ -486,13 +523,14 @@ def _write_catalog(
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary_name, INDEX_FILE)
-        sync_records(
-            _operational_db_path(),
-            records if operational_records is None else operational_records,
-            progress=progress,
-        )
-        # Os eventos já foram incorporados aos registros escritos acima.
-        ANALYSIS_RESULTS_FILE.unlink(missing_ok=True)
+        if not checkpoint:
+            sync_records(
+                _operational_db_path(),
+                records if operational_records is None else operational_records,
+                progress=progress,
+            )
+            # Os eventos já foram incorporados aos registros escritos acima.
+            ANALYSIS_RESULTS_FILE.unlink(missing_ok=True)
     finally:
         if temporary_name:
             Path(temporary_name).unlink(missing_ok=True)
@@ -574,7 +612,7 @@ def index_catalog_available(source_dirs: Path | list[Path]) -> bool:
 
 def _scan_and_merge(
     sources: list[Path], old_records: list[dict], progress_callback=None,
-    *, progress: IndexProgress | None = None,
+    *, progress: IndexProgress | None = None, checkpoint_callback=None,
 ) -> tuple[list[dict], dict, int, list[dict], list[dict]]:
     """Varre o disco e mescla em fluxo, sem manter dois catálogos completos.
 
@@ -590,15 +628,20 @@ def _scan_and_merge(
     quarantine_issues: list[dict] = []
     seen_paths: set[str] = set()
     scanned = 0
+    last_checkpoint = 0
     stats = {
         "added": 0, "removed": 0, "moved": 0, "changed": 0,
         "unchanged": 0, "hashed": 0, "errors": 0, "review": 0,
     }
 
     def add_issue(source_number: int, source: Path, path: Path, reason: str, message: str):
-        logging.getLogger(__name__).error(
-            "Falha na indexação | arquivo: %s | motivo: %s: %s", path, reason, message,
-        )
+        # Formatos conhecidos, mas fora do catálogo (por exemplo, PSD), são
+        # apenas ignorados. Mantemos o registro para a interface sem poluir o
+        # terminal durante uma varredura de pastas de criação.
+        if reason != "UNSUPPORTED_FORMAT":
+            logging.getLogger(__name__).error(
+                "Falha na indexação | arquivo: %s | motivo: %s: %s", path, reason, message,
+            )
         try:
             relative = path.relative_to(source).as_posix()
         except ValueError:
@@ -625,6 +668,25 @@ def _scan_and_merge(
             Path(record.get("path", "")), reason, message,
         )
         return True
+
+    def checkpoint_if_needed():
+        nonlocal last_checkpoint
+        if checkpoint_callback is None or scanned - last_checkpoint < 1000:
+            return
+        # Mantém também os registros ainda não verificados. Assim, em uma
+        # atualização incremental interrompida, um checkpoint não transforma
+        # arquivos antigos em ausentes apenas porque ainda não foram visitados.
+        snapshot = [*matched, *new_records, *old_by_path.values()]
+        try:
+            checkpoint_callback(snapshot, scanned)
+        except (OSError, ValueError) as exc:
+            # O checkpoint é uma proteção adicional; uma falha ao gravá-lo não
+            # pode cancelar uma indexação que ainda pode terminar normalmente.
+            logging.getLogger(__name__).warning(
+                "Não foi possível salvar checkpoint do índice: %s", exc,
+            )
+        else:
+            last_checkpoint = scanned
 
     for source_number, source in enumerate(sources):
         issue_callback = lambda path, reason, message, sn=source_number, root=source: add_issue(
@@ -664,14 +726,32 @@ def _scan_and_merge(
                 old["active"] = True
                 old["missing_locally"] = False
                 old.pop("missing_since", None)
+                inferred_id = inferred_design_id(relative.parts[-2], path.name)
+                inferred_variant = variant_from_filename(inferred_id, path.name)
+                if (
+                    old.get("design_id") != inferred_id
+                    or old.get("codigo") != inferred_id
+                    or old.get("variante") != inferred_variant
+                ):
+                    old["design_id"] = inferred_id
+                    old["codigo"] = inferred_id
+                    old["variante"] = inferred_variant
+                    old["key"] = image_key(inferred_id, path.stem)
+                    if old.get("attention_reason") == "VARIANT_NOT_IDENTIFIED":
+                        old["attention_status"] = ""
+                        old["attention_reason"] = ""
+                        old["attention_at"] = ""
+                    dirty_records.append(old)
                 if was_missing:
                     old["scan_status"] = "reappeared"
                     old["last_indexed_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-                    dirty_records.append(old)
+                    if old not in dirty_records:
+                        dirty_records.append(old)
                 matched.append(old)
                 stats["unchanged"] += 1
                 progress.report("Verificando imagens", scanned,
                                 detail=f"Novas: {len(new_records):,}; inalteradas: {stats['unchanged']:,}; alteradas: {stats['changed']:,}")
+                checkpoint_if_needed()
                 continue
 
             record = _make_record(
@@ -755,6 +835,7 @@ def _scan_and_merge(
                 dirty_records.append(record)
             progress.report("Verificando imagens", scanned,
                             detail=f"Novas: {len(new_records):,}; inalteradas: {stats['unchanged']:,}; alteradas: {stats['changed']:,}")
+            checkpoint_if_needed()
 
     progress.report("Verificando imagens", scanned, scanned, force=True,
                     detail=f"Novas: {len(new_records):,}; inalteradas: {stats['unchanged']:,}; alteradas: {stats['changed']:,}")
@@ -893,8 +974,13 @@ def build_index(source_dirs, progress_callback=None) -> tuple[dict[str, list[str
     started = time.monotonic()
     progress = IndexProgress(progress_callback)
     previous = _load_catalog(sources, progress)
+    def save_checkpoint(records: list[dict], count: int):
+        _write_catalog(records, sources, checkpoint=True)
+        progress.report("Checkpoint salvo", count, detail="a cada 1.000 imagens", force=True)
+
     records, _stats, scanned, _dirty_records, quarantine_issues = _scan_and_merge(
-        sources, previous[1] if previous else [], progress=progress
+        sources, previous[1] if previous else [], progress=progress,
+        checkpoint_callback=save_checkpoint,
     )
     index = _index_from_records(records)
     _write_catalog(records, sources, progress=progress)
@@ -917,8 +1003,12 @@ def update_index_incremental(source_dirs, progress_callback=None):
             "Ainda não existe um índice completo para estas pastas. "
             "Clique primeiro em Atualizar índice completo."
         )
+    def save_checkpoint(records: list[dict], count: int):
+        _write_catalog(records, sources, checkpoint=True)
+        progress.report("Checkpoint salvo", count, detail="a cada 1.000 imagens", force=True)
+
     records, stats, scanned, dirty_records, quarantine_issues = _scan_and_merge(
-        sources, previous[1], progress=progress
+        sources, previous[1], progress=progress, checkpoint_callback=save_checkpoint,
     )
     index = _index_from_records(records)
     if dirty_records:

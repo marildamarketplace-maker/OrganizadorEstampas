@@ -416,7 +416,11 @@ Responses API da OpenAI como fallback. Configure `OPENAI_API_KEY` no `.env`; o m
 pode ser alterado com `OPENAI_ORDER_MODEL` (padrão: `gpt-4o-mini`). As respostas da API
 não são armazenadas (`store=false`). Os limites opcionais são
 `CODEX_ORDER_TIMEOUT_SECONDS` (padrão: 600) e `OPENAI_ORDER_TIMEOUT_SECONDS` (padrão:
-300). O terminal e o log informam qual provedor concluiu a extração.
+300). Para o Codex, `CODEX_ORDER_MODEL` escolhe o modelo principal (padrão:
+`gpt-6.1-sol`) e `CODEX_ORDER_MODEL_FALLBACKS` define alternativas separadas por vírgula
+(padrão: `gpt-6-luna,gpt-5.6-terra`). O processador tenta a próxima alternativa quando
+o CLI informa que o modelo não está disponível para a conta. O terminal e o log informam
+qual provedor concluiu a extração.
 
 ## Instalação para testar com Python
 

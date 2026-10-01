@@ -381,8 +381,14 @@ obrigatórios.
 ## Processamento de vários PDFs pelo Codex
 
 1. Coloque os pedidos em `pedidos_pdf/entrada`.
-2. Execute `./pedidos_pdf/processar_pedidos_lote.sh`.
+2. Execute `./pedidos_pdf/processar_pedidos_lote_mac.sh` no macOS ou
+   `pedidos_pdf\processar_pedidos_lote_windows.bat` no Windows.
 3. Consulte a pasta mais recente em `pedidos_pdf/relatorios`.
+
+Antes dos PDFs, o lançador verifica se **Atualizar índice** já terminou com sucesso
+no dia atual para as mesmas pastas configuradas. Se ainda não terminou, executa o
+scan local automaticamente e mostra o progresso no terminal. Uma atualização feita
+pelo botão do aplicativo também conta; o marcador só é gravado após a conclusão.
 
 Cada PDF novo recebe uma execução isolada do prompt. O controle usa o conteúdo do
 arquivo, e não apenas o nome: um PDF concluído continua sendo reconhecido se for

@@ -8,8 +8,11 @@ __pycache__/
 # Arquivos gerados pelo aplicativo
 pedidos/
 outputs/
-# Arquivos novos desta área são apenas de uso local.
-pedidos_pdf/
+# PDFs, relatórios e controles desta área são apenas de uso local; os dois
+# lançadores multiplataforma fazem parte do aplicativo.
+pedidos_pdf/*
+!pedidos_pdf/processar_pedidos_lote_mac.sh
+!pedidos_pdf/processar_pedidos_lote_windows.bat
 dist/
 build/
 *.spec

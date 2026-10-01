@@ -25,6 +25,7 @@ from .config import (
 )
 from .asset_identity import relative_asset_identity
 from .index_progress import IndexProgress
+from .index_run_state import record_index_update, state_file_for
 from .operational_store import (
     overlay_records, record_quarantine_issues, record_scan_summary, sync_records,
 )
@@ -986,6 +987,7 @@ def build_index(source_dirs, progress_callback=None) -> tuple[dict[str, list[str
     _write_catalog(records, sources, progress=progress)
     record_quarantine_issues(_operational_db_path(), quarantine_issues)
     duplicates_log = _write_duplicates(index)
+    record_index_update(sources, state_file=state_file_for(INDEX_FILE))
     progress.report("Índice concluído", scanned, scanned, force=True)
     return index, IndexResult(
         scanned, len(index), sum(len(value) > 1 for value in index.values()),
@@ -1030,6 +1032,7 @@ def update_index_incremental(source_dirs, progress_callback=None):
         review_files=stats["review"],
     )
     record_scan_summary(_operational_db_path(), result)
+    record_index_update(sources, state_file=state_file_for(INDEX_FILE))
     progress.report("Índice concluído", scanned, scanned, force=True,
                     detail=f"Novos: {stats['added']:,}; inalterados: {stats['unchanged']:,}; erros: {stats['errors']:,}")
     return index, result

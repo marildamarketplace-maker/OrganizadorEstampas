@@ -4,9 +4,15 @@ chcp 65001 >nul
 title Processamento de pedidos em lote
 set "RESULTADO=1"
 set "PODE_ABRIR_RELATORIO=0"
+set "TRAVA_ADQUIRIDA=0"
 
 rem Versao para Windows do processador de pedidos em lote.
 for %%I in ("%~dp0..") do set "RAIZ_PROJETO=%%~fI"
+cd /d "%RAIZ_PROJETO%"
+if errorlevel 1 (
+    echo ERRO: nao foi possivel acessar a pasta do projeto.
+    goto FINALIZAR
+)
 set "CAIXA_ENTRADA=%RAIZ_PROJETO%\pedidos_pdf\entrada"
 set "RELATORIOS=%RAIZ_PROJETO%\pedidos_pdf\relatorios"
 set "CONTROLE=%RAIZ_PROJETO%\pedidos_pdf\.controle"
@@ -63,6 +69,15 @@ if errorlevel 1 (
     echo Ja existe um processamento em lote em andamento.
     goto FINALIZAR
 )
+set "TRAVA_ADQUIRIDA=1"
+
+echo Verificando se o indice local ja foi atualizado hoje...
+"%PYTHON_BIN%" -m meury_app.daily_index
+if errorlevel 1 (
+    echo ERRO: nao foi possivel atualizar o indice. O processamento dos pedidos foi cancelado.
+    goto FINALIZAR
+)
+echo.
 
 echo Caixa de entrada: %CAIXA_ENTRADA%
 echo Iniciando processamento dos PDFs novos...
@@ -70,10 +85,10 @@ echo Iniciando processamento dos PDFs novos...
 "%PYTHON_BIN%" "%PROCESSADOR%" --projeto "%RAIZ_PROJETO%" --codex "%CODEX_BIN%"
 set "RESULTADO=%ERRORLEVEL%"
 
-rmdir "%TRAVA%" 2>nul
 set "PODE_ABRIR_RELATORIO=1"
 
 :FINALIZAR
+if "%TRAVA_ADQUIRIDA%"=="1" rmdir "%TRAVA%" 2>nul
 echo.
 if "%PODE_ABRIR_RELATORIO%"=="1" (
     set "ULTIMO_RELATORIO="

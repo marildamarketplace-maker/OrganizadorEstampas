@@ -4,6 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RAIZ_PROJETO="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$RAIZ_PROJETO"
 CAIXA_ENTRADA="$RAIZ_PROJETO/pedidos_pdf/entrada"
 RELATORIOS="$RAIZ_PROJETO/pedidos_pdf/relatorios"
 CONTROLE="$RAIZ_PROJETO/pedidos_pdf/.controle"
@@ -29,6 +30,13 @@ if [[ -x "$RAIZ_PROJETO/.venv/bin/python" ]]; then
 else
   PYTHON_BIN="$(command -v python3)"
 fi
+
+echo "Verificando se o indice local ja foi atualizado hoje..."
+if ! "$PYTHON_BIN" -m meury_app.daily_index; then
+  echo "ERRO: nao foi possivel atualizar o indice. O processamento dos pedidos foi cancelado."
+  exit 1
+fi
+echo
 
 echo "Caixa de entrada: $CAIXA_ENTRADA"
 echo "Iniciando processamento dos PDFs novos..."

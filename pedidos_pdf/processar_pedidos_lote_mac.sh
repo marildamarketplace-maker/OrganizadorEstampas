@@ -21,8 +21,8 @@ trap 'rmdir "$TRAVA" 2>/dev/null || true' EXIT INT TERM
 if command -v codex >/dev/null 2>&1; then
   CODEX_BIN="$(command -v codex)"
 else
-  echo "Codex nao encontrado no PATH. Instale o comando codex e tente novamente."
-  exit 1
+  CODEX_BIN=""
+  echo "AVISO: Codex nao encontrado. A API OpenAI sera usada se OPENAI_API_KEY estiver configurada."
 fi
 
 if [[ -x "$RAIZ_PROJETO/.venv/bin/python" ]]; then

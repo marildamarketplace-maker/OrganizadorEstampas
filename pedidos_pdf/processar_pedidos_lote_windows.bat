@@ -37,10 +37,7 @@ if not defined PYTHON_BIN (
     echo ERRO: Python nao encontrado. Crie a pasta .venv ou instale o Python.
     goto FINALIZAR
 )
-if not defined CODEX_BIN (
-    echo ERRO: Codex nao encontrado. Instale ou abra o aplicativo Codex e tente novamente.
-    goto FINALIZAR
-)
+if not defined CODEX_BIN echo AVISO: Codex nao encontrado. A API OpenAI sera usada se OPENAI_API_KEY estiver configurada.
 if not exist "%PROCESSADOR%" (
     echo ERRO: Processador nao encontrado: "%PROCESSADOR%"
     goto FINALIZAR
@@ -54,7 +51,7 @@ if /i "%~1"=="--verificar" (
     echo Configuracao valida.
     echo Projeto: %RAIZ_PROJETO%
     echo Python: %PYTHON_BIN%
-    echo Codex: %CODEX_BIN%
+    if defined CODEX_BIN (echo Codex: %CODEX_BIN%) else (echo Codex: nao encontrado; fallback via API)
     echo Entrada: %CAIXA_ENTRADA%
     set "RESULTADO=0"
     goto FINALIZAR

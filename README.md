@@ -397,6 +397,14 @@ O arquivo `historico_processados.csv` lista todos os pedidos concluídos até o 
 Qualquer pendência é classificada como falha. Falhas ficam no histórico e são tentadas
 novamente na execução seguinte.
 
+O Codex CLI é o provedor principal da extração. Se estiver ausente, exceder o tempo
+limite, encerrar com erro ou retornar uma extração inválida, o mesmo PDF é enviado à
+Responses API da OpenAI como fallback. Configure `OPENAI_API_KEY` no `.env`; o modelo
+pode ser alterado com `OPENAI_ORDER_MODEL` (padrão: `gpt-4o-mini`). As respostas da API
+não são armazenadas (`store=false`). Os limites opcionais são
+`CODEX_ORDER_TIMEOUT_SECONDS` (padrão: 600) e `OPENAI_ORDER_TIMEOUT_SECONDS` (padrão:
+300). O terminal e o log informam qual provedor concluiu a extração.
+
 ## Instalação para testar com Python
 
 ## Análise de uma imagem com IA

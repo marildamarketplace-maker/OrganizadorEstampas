@@ -200,6 +200,7 @@ def process_excel(
     copied = missing = duplicates = ignored = 0
 
     for position, row in enumerate(raw_rows, start=2):
+        current = position - 1
         pedido = clean_identifier(row[columns["pedido"]] if columns["pedido"] < len(row) else "")
         estampa = clean_identifier(row[columns["estampa"]] if columns["estampa"] < len(row) else "")
         variante = clean_identifier(
@@ -246,6 +247,13 @@ def process_excel(
         ]
         exclusive_matches = False
         if not matches:
+            if progress_callback:
+                progress_callback(
+                    current,
+                    total,
+                    f"Busca exata sem resultado para {searched_name}; "
+                    "verificando o catálogo completo...",
+                )
             matches = exclusive_image_matches(index, searched_names)
             exclusive_matches = bool(matches)
 
@@ -268,7 +276,20 @@ def process_excel(
                 / safe_folder_name(pedido)
                 / safe_folder_name(base)
             )
+            folder_started = time.monotonic()
+            if progress_callback:
+                progress_callback(
+                    current,
+                    total,
+                    f"Preparando pasta do pedido para {searched_name}...",
+                )
             order_folder.mkdir(parents=True, exist_ok=True)
+            if progress_callback:
+                progress_callback(
+                    current,
+                    total,
+                    f"Pasta preparada em {time.monotonic() - folder_started:.2f}s.",
+                )
             destinations: list[str] = []
             copied_for_item = 0
             existing_for_item = 0
@@ -279,8 +300,27 @@ def process_excel(
                 if destination.exists():
                     existing_for_item += 1
                 else:
+                    copy_started = time.monotonic()
+                    try:
+                        size_bytes = source.stat().st_size
+                        size_label = format_file_size(size_bytes)
+                    except OSError:
+                        size_label = "tamanho desconhecido"
+                    if progress_callback:
+                        progress_callback(
+                            current,
+                            total,
+                            f"Copiando {source.name} ({size_label})...",
+                        )
                     shutil.copy2(source, destination)
                     copied_for_item += 1
+                    if progress_callback:
+                        progress_callback(
+                            current,
+                            total,
+                            f"Cópia de {source.name} concluída em "
+                            f"{time.monotonic() - copy_started:.2f}s.",
+                        )
 
             item.origem = " | ".join(matches)
             item.destino = " | ".join(destinations)
@@ -299,7 +339,6 @@ def process_excel(
         results.append(item)
 
         if progress_callback:
-            current = position - 1
             progress_callback(current, total, f"Processando linha {current} de {total}")
 
     timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -311,7 +350,16 @@ def process_excel(
     report_dir.mkdir(parents=True, exist_ok=True)
     report_xlsx = report_dir / f"relatorio_processamento_{timestamp}.xlsx"
     report_csv = report_dir / f"relatorio_processamento_{timestamp}.csv"
+    reports_started = time.monotonic()
+    if progress_callback:
+        progress_callback(total, total, "Gerando relatórios XLSX e CSV...")
     write_reports(results, report_xlsx, report_csv)
+    if progress_callback:
+        progress_callback(
+            total,
+            total,
+            f"Relatórios concluídos em {time.monotonic() - reports_started:.2f}s.",
+        )
 
     summary = ProcessingSummary(
         total_linhas=total,
@@ -483,6 +531,62 @@ def process_order_json(
             f"JSON inválido na linha {exc.lineno}, coluna {exc.colno}: {exc.msg}"
         ) from exc
     return process_order_payload(payload, output_dir, index, progress_callback)
+
+
+def create_order_response(
+    json_text: str,
+    output_dir: Path,
+    index: dict[str, list[str]],
+    progress_callback: Callable[[int, int, str], None] | None = None,
+) -> dict:
+    """Cria um pedido e retorna o contrato usado pela CLI e pelo lote."""
+    results, summary = process_order_json(
+        json_text,
+        output_dir,
+        index,
+        progress_callback=progress_callback,
+    )
+    _, date_folder = clean_order_date(results[0].data) if results else ("", "")
+    return {
+        "sucesso": True,
+        "pedido": results[0].pedido if results else "",
+        "pastaPedido": str(
+            output_dir
+            / safe_folder_name(results[0].cliente)
+            / date_folder
+            / safe_folder_name(results[0].pedido)
+        ) if results else "",
+        "copiados": summary.copiados,
+        "arquivosCopiados": [
+            item.arquivo_procurado for item in results if item.status == "COPIADO"
+        ],
+        "naoEncontrados": summary.nao_encontrados,
+        "estampasNaoEncontradas": [
+            item.arquivo_procurado
+            for item in results
+            if item.status == "NÃO ENCONTRADO"
+        ],
+        "duplicados": summary.duplicados,
+        "estampasDuplicadas": [
+            item.arquivo_procurado for item in results if item.status == "DUPLICADO"
+        ],
+        "jaExistentesOuIgnorados": summary.ignorados,
+        "arquivosJaExistentes": [
+            item.arquivo_procurado for item in results if item.status == "JÁ EXISTE"
+        ],
+        "erros": [],
+        "relatorio": summary.report_xlsx,
+    }
+
+
+def format_file_size(size_bytes: int) -> str:
+    """Formata tamanhos para logs operacionais sem perder legibilidade."""
+    size = float(max(size_bytes, 0))
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} GB"
 
 
 def write_reports(results: list[ProcessingItem], xlsx_path: Path, csv_path: Path):

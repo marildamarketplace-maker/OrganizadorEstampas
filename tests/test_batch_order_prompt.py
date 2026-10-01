@@ -11,12 +11,51 @@ from meury_app.batch_order_processor import (
     build_prompt,
     extract_with_fallback,
     move_to_completed,
+    run_creator,
     run_openai_api,
     valid_extraction,
 )
+from meury_app.indexer import image_key
 
 
 class BatchOrderPromptTest(unittest.TestCase):
+    def test_creator_reuses_supplied_index_without_starting_subprocess(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "estampas" / "6162-A.jpg"
+            source.parent.mkdir()
+            source.write_bytes(b"imagem")
+            extraction = root / "extracao.json"
+            extraction.write_text(json.dumps({
+                "pedido": "20003945",
+                "data": "25/08/2026",
+                "clienteCodigo": "5211",
+                "clienteNome": "MAGA WOMAN LTDA",
+                "produtos": [{
+                    "tecidoCodigo": "1065",
+                    "tecidoNome": "OXFORD",
+                    "estampa": "6162",
+                    "variante": "A",
+                }],
+            }), encoding="utf-8")
+            log = root / "execucao.log"
+
+            with patch("meury_app.batch_order_processor.subprocess.run") as subprocess_run:
+                result = run_creator(
+                    extraction,
+                    log,
+                    root / "saida",
+                    {image_key("6162", "6162-A"): [str(source)]},
+                )
+
+            subprocess_run.assert_not_called()
+            self.assertEqual(result["resultadoFinal"], "SUCESSO")
+            self.assertEqual(result["quantidadeCopiada"], 1)
+            logged = log.read_text(encoding="utf-8")
+            self.assertIn("Copiando 6162-A.jpg", logged)
+            self.assertIn("Relatórios concluídos", logged)
+            self.assertIn("Tempo total da criação", logged)
+
     def test_exports_only_products_containing_sublime(self):
         prompt = build_prompt(Path("/projeto"), Path("/pedido.pdf"))
 

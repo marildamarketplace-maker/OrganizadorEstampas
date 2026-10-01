@@ -16,10 +16,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List
 
-try:
-    from meury_app.environment import load_local_environment
-except ModuleNotFoundError:  # Compatibilidade com execução direta deste arquivo.
-    from environment import load_local_environment
+if __package__ in {None, ""}:  # Compatibilidade com execução direta deste arquivo.
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from meury_app.config import load_config
+from meury_app.environment import load_local_environment
+from meury_app.indexer import build_index, load_index
+from meury_app.processor import create_order_response
 
 
 FINAL_SUCCESS = {"SUCESSO"}
@@ -429,25 +432,61 @@ def extract_with_fallback(
         ) from api_exc
 
 
-def run_creator(project: Path, extraction_path: Path, log_path: Path) -> Dict[str, Any]:
-    """Cria o pedido a partir de uma extração já validada e armazenada."""
-    completed = subprocess.run(
-        [sys.executable, str(project / "criar_pedido.py"), str(extraction_path)],
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        check=False,
-        cwd=project,
+def load_order_context() -> tuple[Path, dict[str, list[str]]]:
+    """Carrega uma única instância do índice para todos os pedidos do lote."""
+    config = load_config()
+    sources = [Path(value) for value in config["source_dirs"]]
+    output_value = config.get("output_dir")
+    if not sources:
+        raise ValueError("Nenhuma pasta de estampas foi salva no aplicativo.")
+    if not output_value:
+        raise ValueError("Nenhuma pasta de saída foi salva no aplicativo.")
+
+    started = time.monotonic()
+    print("  Carregando índice uma única vez para este lote...", flush=True)
+    index = load_index(sources)
+    if not index:
+        print("  Índice não encontrado; reconstruindo o catálogo...", flush=True)
+        index, _ = build_index(sources)
+    print(
+        f"  Índice carregado: {len(index):,} chaves em "
+        f"{time.monotonic() - started:.2f}s.",
+        flush=True,
     )
-    output = completed.stdout or ""
+    return Path(output_value), index
+
+
+def run_creator(
+    extraction_path: Path,
+    log_path: Path,
+    output_dir: Path,
+    index: dict[str, list[str]],
+) -> Dict[str, Any]:
+    """Cria o pedido em processo, reutilizando o índice já carregado pelo lote."""
+    json_text = extraction_path.read_text(encoding="utf-8")
+    creation_started = time.monotonic()
+
+    def progress(current: int, total: int, message: str) -> None:
+        line = f"  [{current}/{total}] {message}"
+        print(line, flush=True)
+        with log_path.open("a", encoding="utf-8") as stream:
+            stream.write(line + "\n")
+
+    response = create_order_response(
+        json_text,
+        output_dir,
+        index,
+        progress_callback=progress,
+    )
+    elapsed = time.monotonic() - creation_started
     with log_path.open("a", encoding="utf-8") as stream:
         stream.write("\n\n=== CRIAÇÃO DO PEDIDO ===\n")
-        stream.write(output)
-    response = extract_json(output)
-    if completed.returncode != 0 or not response.get("sucesso"):
-        detail = response.get("erro") or output.strip() or "Falha desconhecida."
+        stream.write(f"Tempo total da criação: {elapsed:.2f}s\n")
+        stream.write(json.dumps(response, ensure_ascii=False, indent=2) + "\n")
+    print(f"  Criação do pedido concluída em {elapsed:.2f}s.", flush=True)
+
+    if not response.get("sucesso"):
+        detail = response.get("erro") or "Falha desconhecida."
         return {
             "pedido": response.get("pedido", ""),
             "pastaCriada": response.get("pastaPedido", ""),
@@ -540,6 +579,7 @@ def main() -> int:
     success_rows: List[Dict[str, Any]] = []
     failure_rows: List[Dict[str, Any]] = []
     skipped_rows: List[Dict[str, Any]] = []
+    order_context: tuple[Path, dict[str, list[str]]] | None = None
 
     if not pdfs:
         print(f"Nenhum PDF encontrado em: {input_dir}")
@@ -640,7 +680,15 @@ def main() -> int:
                 print(f"  Extração salva: {extraction_path}", flush=True)
 
             print("  Criando pedido e copiando estampas...", flush=True)
-            result = run_creator(project, extraction_path, log_path)
+            if order_context is None:
+                order_context = load_order_context()
+            output_dir, order_index = order_context
+            result = run_creator(
+                extraction_path,
+                log_path,
+                output_dir,
+                order_index,
+            )
         except (OSError, RuntimeError, ValueError) as exc:
             result = {
                 "pedido": extraction.get("pedido", "") if "extraction" in locals() else "",

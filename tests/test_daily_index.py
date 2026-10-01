@@ -61,6 +61,56 @@ class IndexRunStateTest(unittest.TestCase):
 
 
 class DailyIndexTest(unittest.TestCase):
+    def test_preparation_loads_index_once_when_scan_already_ran_today(self):
+        expected = {"6162\0" + "6162-a": ["6162-A.jpg"]}
+        with patch.object(
+            daily_index, "load_config", return_value={"source_dirs": ["artes"]},
+        ), patch.object(
+            daily_index, "index_updated_today", return_value=True,
+        ), patch.object(
+            daily_index.indexer, "load_index", return_value=expected,
+        ) as load, patch.object(
+            daily_index.indexer, "update_index_incremental",
+        ) as incremental:
+            index, sources, updated = daily_index.prepare_daily_index()
+
+        self.assertIs(index, expected)
+        self.assertEqual(sources, [Path("artes")])
+        self.assertFalse(updated)
+        load.assert_called_once_with([Path("artes")])
+        incremental.assert_not_called()
+
+    def test_preparation_reuses_index_returned_by_daily_scan(self):
+        expected = {"6162\0" + "6162-a": ["6162-A.jpg"]}
+        result = Mock(
+            elapsed_seconds=1.2,
+            total_found=1,
+            unchanged_files=1,
+            added_files=0,
+            changed_files=0,
+            moved_files=0,
+            review_files=0,
+            absent_files=0,
+            errors=0,
+            duplicates=0,
+        )
+        with patch.object(
+            daily_index, "load_config", return_value={"source_dirs": ["artes"]},
+        ), patch.object(
+            daily_index, "index_updated_today", return_value=False,
+        ), patch.object(
+            daily_index.indexer, "index_catalog_available", return_value=True,
+        ), patch.object(
+            daily_index.indexer,
+            "update_index_incremental",
+            return_value=(expected, result),
+        ), patch.object(daily_index.indexer, "load_index") as load:
+            index, _sources, updated = daily_index.prepare_daily_index()
+
+        self.assertIs(index, expected)
+        self.assertTrue(updated)
+        load.assert_not_called()
+
     def test_skips_scan_when_already_updated_today(self):
         with patch.object(daily_index, "load_config", return_value={"source_dirs": ["artes"]}), \
              patch.object(daily_index, "index_updated_today", return_value=True), \
@@ -124,7 +174,7 @@ class DailyIndexTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Nenhuma pasta"):
                 daily_index.ensure_daily_index()
 
-    def test_batch_launchers_update_before_processing_orders(self):
+    def test_batch_launchers_delegate_daily_index_to_same_python_process(self):
         project = Path(__file__).parents[1]
         for filename in (
             "processar_pedidos_lote_mac.sh",
@@ -132,10 +182,9 @@ class DailyIndexTest(unittest.TestCase):
         ):
             script = (project / "pedidos_pdf" / filename).read_text(encoding="utf-8")
             with self.subTest(filename=filename):
-                daily_position = script.index("meury_app.daily_index")
-                processor_position = script.rindex("--projeto")
-                self.assertLess(daily_position, processor_position)
-                self.assertLess(script.index("TRAVA"), daily_position)
+                self.assertNotIn("meury_app.daily_index", script)
+                self.assertIn("batch_order_processor.py", script)
+                self.assertLess(script.index("TRAVA"), script.rindex("--projeto"))
 
 
 if __name__ == "__main__":

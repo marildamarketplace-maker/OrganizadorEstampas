@@ -20,8 +20,8 @@ if __package__ in {None, ""}:  # Compatibilidade com execução direta deste arq
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from meury_app.config import load_config
+from meury_app.daily_index import ensure_daily_index, prepare_daily_index
 from meury_app.environment import load_local_environment
-from meury_app.indexer import build_index, load_index
 from meury_app.processor import create_order_response
 
 
@@ -433,23 +433,17 @@ def extract_with_fallback(
 
 
 def load_order_context() -> tuple[Path, dict[str, list[str]]]:
-    """Carrega uma única instância do índice para todos os pedidos do lote."""
+    """Prepara e preserva uma única instância do índice para todo o lote."""
     config = load_config()
-    sources = [Path(value) for value in config["source_dirs"]]
     output_value = config.get("output_dir")
-    if not sources:
-        raise ValueError("Nenhuma pasta de estampas foi salva no aplicativo.")
     if not output_value:
         raise ValueError("Nenhuma pasta de saída foi salva no aplicativo.")
 
     started = time.monotonic()
-    print("  Carregando índice uma única vez para este lote...", flush=True)
-    index = load_index(sources)
-    if not index:
-        print("  Índice não encontrado; reconstruindo o catálogo...", flush=True)
-        index, _ = build_index(sources)
+    index, _sources, updated = prepare_daily_index()
+    action = "atualizado e reaproveitado" if updated else "carregado uma única vez"
     print(
-        f"  Índice carregado: {len(index):,} chaves em "
+        f"  Índice {action}: {len(index):,} chaves em "
         f"{time.monotonic() - started:.2f}s.",
         flush=True,
     )
@@ -576,16 +570,32 @@ def main() -> int:
         (path for path in input_dir.iterdir() if path.is_file() and path.suffix.casefold() == ".pdf"),
         key=lambda path: path.name.casefold(),
     )
+    pdf_digests = {pdf_path: file_hash(pdf_path) for pdf_path in pdfs}
+    has_pending_pdfs = any(
+        digest not in successful_records for digest in pdf_digests.values()
+    )
     success_rows: List[Dict[str, Any]] = []
     failure_rows: List[Dict[str, Any]] = []
     skipped_rows: List[Dict[str, Any]] = []
     order_context: tuple[Path, dict[str, list[str]]] | None = None
 
-    if not pdfs:
-        print(f"Nenhum PDF encontrado em: {input_dir}")
+    try:
+        if not has_pending_pdfs:
+            ensure_daily_index()
+            if not pdfs:
+                print(f"Nenhum PDF encontrado em: {input_dir}")
+        else:
+            order_context = load_order_context()
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(
+            f"[indice] ERRO: não foi possível preparar o índice; "
+            f"o lote foi cancelado: {exc}",
+            flush=True,
+        )
+        return 1
 
     for position, pdf_path in enumerate(pdfs, start=1):
-        digest = file_hash(pdf_path)
+        digest = pdf_digests[pdf_path]
         print("")
         print(f"[{position}/{len(pdfs)}] Processando: {pdf_path.name}", flush=True)
         if digest in successful_records:

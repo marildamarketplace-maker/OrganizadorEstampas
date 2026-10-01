@@ -4,7 +4,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from meury_app.config import (
-    original_images_path, resolve_record_path, resolve_relative_image_path,
+    join_indexed_image_path, original_images_path, resolve_record_path,
+    resolve_relative_image_path,
     validate_original_images_path,
 )
 
@@ -37,6 +38,30 @@ class RootPathConfigTest(unittest.TestCase):
             for invalid in ("../fora.tif", "/fora.tif"):
                 with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                     resolve_relative_image_path(invalid, root=root)
+
+    def test_joins_indexed_path_without_resolving_filesystem(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            with patch.object(Path, "resolve") as resolve:
+                result = join_indexed_image_path(
+                    "6844\\A\\6844-A.tif", root=root,
+                )
+
+            resolve.assert_not_called()
+            self.assertEqual(result, root / "6844" / "A" / "6844-A.tif")
+
+    def test_indexed_path_rejects_cross_platform_absolute_paths(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            invalid_paths = (
+                "../fora.tif",
+                "/fora.tif",
+                "C:\\fora\\arquivo.tif",
+                "\\\\servidor\\pasta\\arquivo.tif",
+            )
+            for invalid in invalid_paths:
+                with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                    join_indexed_image_path(invalid, root=root)
 
     def test_startup_validation_reports_unavailable_volume(self):
         with tempfile.TemporaryDirectory() as folder:

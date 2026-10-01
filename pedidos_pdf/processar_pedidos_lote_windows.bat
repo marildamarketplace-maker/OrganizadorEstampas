@@ -68,16 +68,8 @@ if errorlevel 1 (
 )
 set "TRAVA_ADQUIRIDA=1"
 
-echo Verificando se o indice local ja foi atualizado hoje...
-"%PYTHON_BIN%" -m meury_app.daily_index
-if errorlevel 1 (
-    echo ERRO: nao foi possivel atualizar o indice. O processamento dos pedidos foi cancelado.
-    goto FINALIZAR
-)
-echo.
-
 echo Caixa de entrada: %CAIXA_ENTRADA%
-echo Iniciando processamento dos PDFs novos...
+echo Iniciando atualizacao diaria do indice e processamento dos PDFs novos...
 
 "%PYTHON_BIN%" "%PROCESSADOR%" --projeto "%RAIZ_PROJETO%" --codex "%CODEX_BIN%"
 set "RESULTADO=%ERRORLEVEL%"

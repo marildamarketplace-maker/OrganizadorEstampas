@@ -8,6 +8,7 @@ from openpyxl import Workbook
 import meury_app.indexer as indexer_module
 from meury_app.indexer import (
     build_index,
+    ImageIndex,
     image_key,
     load_index,
     update_index_incremental,
@@ -16,6 +17,39 @@ from meury_app.processor import process_csv_text, process_excel, process_order_p
 
 
 class CustomerOrderStructureTest(unittest.TestCase):
+    def test_rejects_symlink_that_escapes_index_source_during_copy(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source_root = root / "estampas"
+            source_root.mkdir()
+            outside = root / "fora.jpg"
+            outside.write_bytes(b"fora")
+            link = source_root / "6162-A.jpg"
+            try:
+                link.symlink_to(outside)
+            except OSError as exc:
+                self.skipTest(f"Symlink indisponível neste ambiente: {exc}")
+
+            index = ImageIndex(
+                {image_key("6162", "6162-A"): [str(link)]},
+                source_dirs=[source_root.resolve()],
+            )
+            payload = {
+                "pedido": "1",
+                "data": "01/10/2026",
+                "clienteCodigo": "1",
+                "clienteNome": "TESTE",
+                "produtos": [{
+                    "tecidoCodigo": "1416",
+                    "tecidoNome": "TRICOLINE",
+                    "estampa": "6162",
+                    "variante": "A",
+                }],
+            }
+
+            with self.assertRaisesRegex(ValueError, "fora das pastas de origem"):
+                process_order_payload(payload, root / "saida", index)
+
     def test_copies_all_exclusive_images_found_by_filename_prefix(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

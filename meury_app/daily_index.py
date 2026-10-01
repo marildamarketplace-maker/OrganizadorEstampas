@@ -13,12 +13,10 @@ def _progress(_count: int, message: str) -> None:
     print(f"[indice] {message}", flush=True)
 
 
-def ensure_daily_index() -> bool:
-    """Atualiza o índice quando ainda não houve scan das mesmas origens hoje.
-
-    Retorna ``True`` quando um scan foi executado e ``False`` quando o marcador
-    diário permitiu pular a etapa.
-    """
+def _run_daily_index(
+    *, retain_index: bool,
+) -> tuple[bool, dict[str, list[str]] | None, list[Path]]:
+    """Executa o preflight diário e opcionalmente preserva o índice montado."""
     config = load_config()
     sources = [
         Path(value)
@@ -35,14 +33,15 @@ def ensure_daily_index() -> bool:
     print("[indice] Verificando a atualização diária do índice...", flush=True)
     if index_updated_today(sources, state_file=state_file):
         print("[indice] O índice já foi atualizado hoje; etapa dispensada.", flush=True)
-        return False
+        index = indexer.load_index(sources) if retain_index else None
+        return False, index, sources
 
     print(
         "[indice] Índice ainda não atualizado hoje. Iniciando scan local...",
         flush=True,
     )
     if indexer.index_catalog_available(sources):
-        _index, result = indexer.update_index_incremental(
+        index, result = indexer.update_index_incremental(
             sources, progress_callback=_progress,
         )
         print(
@@ -60,7 +59,7 @@ def ensure_daily_index() -> bool:
             flush=True,
         )
     else:
-        _index, result = indexer.build_index(sources, progress_callback=_progress)
+        index, result = indexer.build_index(sources, progress_callback=_progress)
         print(
             "[indice] Índice concluído em "
             f"{result.elapsed_seconds:.1f}s. "
@@ -72,7 +71,25 @@ def ensure_daily_index() -> bool:
         )
         if result.duplicates_log:
             print(f"[indice] Log de duplicidades: {result.duplicates_log}", flush=True)
-    return True
+    return True, index if retain_index else None, sources
+
+
+def ensure_daily_index() -> bool:
+    """Atualiza o índice sem mantê-lo em memória para outro consumidor.
+
+    Retorna ``True`` quando um scan foi executado e ``False`` quando o marcador
+    diário permitiu pular a etapa.
+    """
+    updated, _index, _sources = _run_daily_index(retain_index=False)
+    return updated
+
+
+def prepare_daily_index() -> tuple[dict[str, list[str]], list[Path], bool]:
+    """Entrega ao lote o índice atualizado sem remontá-lo desnecessariamente."""
+    updated, index, sources = _run_daily_index(retain_index=True)
+    if index is None:
+        raise RuntimeError("A preparação diária não retornou o índice de estampas.")
+    return index, sources, updated
 
 
 def main() -> int:

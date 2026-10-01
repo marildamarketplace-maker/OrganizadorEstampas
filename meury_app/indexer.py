@@ -21,7 +21,7 @@ from .config import (
     OPERATIONAL_DB_FILE,
     SUPPORTED_EXTENSIONS,
     ensure_app_dir,
-    resolve_record_path,
+    join_indexed_image_path,
 )
 from .asset_identity import relative_asset_identity
 from .index_progress import IndexProgress
@@ -470,11 +470,14 @@ def _load_catalog(source_dirs: list[Path] | None = None,
             return None
         for current, record in enumerate(records, 1):
             source_number = int(record.get("source", 0))
-            if source_number >= len(source_dirs):
+            if not 0 <= source_number < len(source_dirs):
                 return None
-            record["path"] = str(resolve_record_path(record, source_dirs))
+            record["path"] = str(join_indexed_image_path(
+                record.get("relative_path", ""),
+                root=source_dirs[source_number],
+            ))
             if progress:
-                progress.report("Resolvendo caminhos", current, len(records))
+                progress.report("Montando caminhos", current, len(records))
     return header, records
 
 
@@ -485,8 +488,18 @@ def _operational_db_path() -> Path:
     return INDEX_FILE.with_name(OPERATIONAL_DB_FILE.name)
 
 
-def _index_from_records(records: list[dict]) -> dict[str, list[str]]:
-    index: dict[str, list[str]] = {}
+class ImageIndex(dict[str, list[str]]):
+    """Índice de busca que preserva as raízes usadas para validar cópias."""
+
+    def __init__(self, *args, source_dirs: list[Path] | None = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.source_dirs = tuple(source_dirs or ())
+
+
+def _index_from_records(
+    records: list[dict], source_dirs: list[Path] | None = None,
+) -> ImageIndex:
+    index = ImageIndex(source_dirs=source_dirs)
     for record in records:
         if record.get("active", True):
             index.setdefault(record["key"], []).append(record["path"])
@@ -579,7 +592,8 @@ def load_index_payload(source_dirs: Path | list[Path] | None = None) -> dict | N
         return None
     header, records = loaded
     return {
-        **header, "version": INDEX_VERSION, "index": _index_from_records(records),
+        **header, "version": INDEX_VERSION,
+        "index": _index_from_records(records, sources),
         "records": records,
     }
 
@@ -983,7 +997,7 @@ def build_index(source_dirs, progress_callback=None) -> tuple[dict[str, list[str
         sources, previous[1] if previous else [], progress=progress,
         checkpoint_callback=save_checkpoint,
     )
-    index = _index_from_records(records)
+    index = _index_from_records(records, sources)
     _write_catalog(records, sources, progress=progress)
     record_quarantine_issues(_operational_db_path(), quarantine_issues)
     duplicates_log = _write_duplicates(index)
@@ -1012,7 +1026,7 @@ def update_index_incremental(source_dirs, progress_callback=None):
     records, stats, scanned, dirty_records, quarantine_issues = _scan_and_merge(
         sources, previous[1], progress=progress, checkpoint_callback=save_checkpoint,
     )
-    index = _index_from_records(records)
+    index = _index_from_records(records, sources)
     if dirty_records:
         _write_catalog(records, sources, operational_records=dirty_records, progress=progress)
         duplicates_log = _write_duplicates(index)

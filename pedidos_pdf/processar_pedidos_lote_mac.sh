@@ -31,15 +31,8 @@ else
   PYTHON_BIN="$(command -v python3)"
 fi
 
-echo "Verificando se o indice local ja foi atualizado hoje..."
-if ! "$PYTHON_BIN" -m meury_app.daily_index; then
-  echo "ERRO: nao foi possivel atualizar o indice. O processamento dos pedidos foi cancelado."
-  exit 1
-fi
-echo
-
 echo "Caixa de entrada: $CAIXA_ENTRADA"
-echo "Iniciando processamento dos PDFs novos..."
+echo "Iniciando atualizacao diaria do indice e processamento dos PDFs novos..."
 
 "$PYTHON_BIN" "$RAIZ_PROJETO/meury_app/batch_order_processor.py" \
   --projeto "$RAIZ_PROJETO" \

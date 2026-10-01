@@ -100,6 +100,29 @@ def exclusive_image_matches(
     return matches
 
 
+def validated_copy_source(
+    source: Path, index: dict[str, list[str]],
+) -> Path:
+    """Resolve fisicamente somente um arquivo que será copiado.
+
+    Índices carregados pelo aplicativo preservam suas raízes. Assim, symlinks
+    ou junctions que escapem delas continuam bloqueados sem resolver todos os
+    caminhos durante a inicialização.
+    """
+    source_roots = tuple(getattr(index, "source_dirs", ()))
+    if not source_roots:
+        return source
+
+    resolved = source.resolve(strict=True)
+    for root in source_roots:
+        root_path = Path(root)
+        if resolved == root_path or root_path in resolved.parents:
+            return resolved
+    raise ValueError(
+        f"A estampa selecionada está fora das pastas de origem: {source}"
+    )
+
+
 def clean_order_date(value) -> tuple[str, str]:
     """Retorna a data para o relatório e uma versão segura para a pasta."""
     if isinstance(value, (datetime, date)):
@@ -294,7 +317,7 @@ def process_excel(
             copied_for_item = 0
             existing_for_item = 0
             for match in matches:
-                source = Path(match)
+                source = validated_copy_source(Path(match), index)
                 destination = order_folder / source.name.upper()
                 destinations.append(str(destination))
                 if destination.exists():

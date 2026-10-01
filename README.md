@@ -241,8 +241,9 @@ atualizações no máximo uma vez por segundo dentro de cada
 etapa. A varredura informa quantos arquivos foram verificados e quantos são novos,
 inalterados ou alterados. O total da pasta só é conhecido ao finalizar a varredura:
 não se percorre o HD duas vezes apenas para calcular uma porcentagem. Leitura de
-catálogos novos, SHA-256 e persistência exibem quantidade/total e porcentagem da
-respectiva etapa. A conclusão geral só é informada depois de salvar os dados.
+catálogos e persistência exibem quantidade/total e porcentagem da respectiva etapa.
+A validação e o SHA-256 dos candidatos ocorrem durante a varredura; o total de hashes
+é informado ao concluir essa etapa. A conclusão geral só é informada depois de salvar os dados.
 O terminal fica reservado às falhas, informando o arquivo e o motivo.
 
 O aviso `DecompressionBombWarning` do Pillow é silenciado somente na validação do
@@ -250,15 +251,27 @@ O aviso `DecompressionBombWarning` do Pillow é silenciado somente na validaçã
 sendo detectados. Arquivos inalterados não são reabertos nem recalculam SHA-256;
 o JSONL também não é regravado quando não há alterações.
 
+Os checkpoints guardam somente os candidatos verificados em
+`indice_estampas.scan.jsonl`, sem substituir o catálogo por um scan parcial.
+Após interrupção, a atualização percorre as origens novamente e reutiliza hashes
+cuja assinatura física continua válida. Erros de acesso abortam a atualização antes
+de publicar ausências. A publicação final possui recuperação entre JSONL e SQLite.
+
+O diagnóstico da última execução fica em `indice_estampas.performance.json`, junto
+ao catálogo, com tempos por etapa, contadores e caminhos operacionais. Para HD externo,
+recomenda-se manter os dados operacionais em SSD interno. A localização não é alterada
+automaticamente. Consulte [o plano e os resultados de performance](MELHORIAS_PERFORMANCE_INDICE.md).
+
 Para medir o fluxo com arquivos reais temporários, sem usar o catálogo pessoal:
 
 ```sh
-python scripts/benchmark_index.py --count 195000 --output reports/index-benchmark.json
+python scripts/benchmark_index.py --count 195000 --repeats 3 --output reports/index-benchmark.json
 ```
 
 No Windows, pode-se usar `.venv\Scripts\python.exe` no lugar de `python`. A medição
-executa criação, atualização sem alterações e atualização com alterações,
-renomeações e exclusões. Os JPEGs são pequenos (32×32); os tempos não estimam o
+executa criação e repete as atualizações sem alterações e com inclusões, alterações,
+renomeações e exclusões, registrando mediana e pior tempo. O cache não é limpo pelo
+benchmark. Os JPEGs são pequenos (32×32); os tempos não estimam o
 custo de ler originais grandes em HD externo ou rede. O workflow de Windows executa
 os testes e essa carga em um runner nativo antes de empacotar o aplicativo e
 disponibiliza o relatório como artefato.

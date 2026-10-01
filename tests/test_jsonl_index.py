@@ -61,7 +61,7 @@ class JsonlIndexTest(unittest.TestCase):
         with patch.object(indexer_module.os, "scandir", return_value=Entries()):
             self.assertEqual(list(indexer_module._iter_source_files(Path("artes"))), [])
 
-    def test_saves_an_atomic_checkpoint_every_thousand_files(self):
+    def test_checkpoints_candidates_without_rewriting_catalog(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "artes" / "9000"
@@ -73,14 +73,16 @@ class JsonlIndexTest(unittest.TestCase):
             with patches[0], patches[1], patches[2], patches[3], patch.object(
                 indexer_module, "_write_catalog", wraps=original_write,
             ) as write_catalog:
-                build_index(source.parent)
+                _, result = build_index(source.parent)
 
             checkpoints = [
                 call for call in write_catalog.call_args_list
                 if call.kwargs.get("checkpoint")
             ]
-            self.assertEqual(len(checkpoints), 1)
-            self.assertEqual(len(checkpoints[0].args[0]), 1000)
+            self.assertEqual(len(checkpoints), 0)
+            self.assertEqual(write_catalog.call_count, 1)
+            self.assertEqual(result.performance["counters"]["journal_records_written"], 1000)
+            self.assertGreaterEqual(result.performance["counters"]["checkpoints"], 1)
 
     def test_writes_jsonl_with_metadata_and_supports_jpeg(self):
         with tempfile.TemporaryDirectory() as temporary:

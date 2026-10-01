@@ -13,7 +13,7 @@ class EnvironmentTest(unittest.TestCase):
         with patch("meury_app.environment.sys.frozen", True, create=True), \
              patch("meury_app.environment.sys.executable", "/Aplicativo/app.exe"):
             candidates = environment_file_candidates()
-        self.assertEqual(candidates, [Path("/Aplicativo/.env")])
+        self.assertEqual(candidates, [Path("/Aplicativo/.env").resolve()])
 
     def test_loads_env_from_current_directory(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -1,0 +1,34 @@
+{
+  "platform": "Windows-10-10.0.19044-SP0",
+  "python": "3.13.15",
+  "count": 2000,
+  "fixture": "tiny synthetic PDF headers, local temp, warm cache, one run",
+  "full": {
+    "total_files": 2000,
+    "indexed_names": 2000,
+    "duplicates": 0,
+    "source_dirs": 1,
+    "elapsed_seconds": 11.678203499999654,
+    "duplicates_log": null
+  },
+  "full_catalog_bytes_written": 6386675,
+  "unchanged": {
+    "scanned_files": 2000,
+    "added_files": 0,
+    "indexed_names": 2000,
+    "duplicates": 0,
+    "source_dirs": 1,
+    "elapsed_seconds": 1.2049004000000423,
+    "duplicates_log": null,
+    "removed_files": 0,
+    "moved_files": 0,
+    "changed_files": 0,
+    "unchanged_files": 2000,
+    "verification_files": 0,
+    "hashed_files": 0,
+    "errors": 0,
+    "review_files": 0
+  },
+  "unchanged_catalog_writes": 2,
+  "unchanged_catalog_bytes_written": 5261130
+}

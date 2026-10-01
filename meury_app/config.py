@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from contextlib import closing
 import json
 import os
@@ -150,6 +150,36 @@ def resolve_relative_image_path(
     except ValueError as exc:
         raise ValueError("O caminho da estampa está fora do diretório raiz.") from exc
     return resolved
+
+
+def join_indexed_image_path(relative_path: str | Path, *, root: Path) -> Path:
+    """Combina raiz e caminho do catálogo sem consultar o filesystem.
+
+    O catálogo pode conter milhares de registros. A resolução física, inclusive
+    de symlinks e junctions, é feita somente quando um arquivo será utilizado.
+    """
+    raw_relative = str(relative_path).replace("\\", "/")
+    posix_relative = PurePosixPath(raw_relative)
+    windows_relative = PureWindowsPath(str(relative_path))
+    if (
+        posix_relative.is_absolute()
+        or windows_relative.is_absolute()
+        or windows_relative.drive
+        or ".." in posix_relative.parts
+    ):
+        raise ValueError("O caminho da estampa deve ser relativo ao diretório raiz.")
+
+    base = os.path.abspath(os.path.expanduser(os.fspath(root)))
+    candidate = os.path.abspath(os.path.join(base, *posix_relative.parts))
+    try:
+        common = os.path.commonpath(
+            (os.path.normcase(base), os.path.normcase(candidate))
+        )
+    except ValueError as exc:
+        raise ValueError("O caminho da estampa está fora do diretório raiz.") from exc
+    if common != os.path.normcase(base):
+        raise ValueError("O caminho da estampa está fora do diretório raiz.")
+    return Path(candidate)
 
 
 def resolve_record_path(record: dict, source_dirs=None, config: dict | None = None) -> Path:

@@ -4,9 +4,15 @@ chcp 65001 >nul
 title Processamento de pedidos em lote
 set "RESULTADO=1"
 set "PODE_ABRIR_RELATORIO=0"
+set "TRAVA_ADQUIRIDA=0"
 
 rem Versao para Windows do processador de pedidos em lote.
 for %%I in ("%~dp0..") do set "RAIZ_PROJETO=%%~fI"
+cd /d "%RAIZ_PROJETO%"
+if errorlevel 1 (
+    echo ERRO: nao foi possivel acessar a pasta do projeto.
+    goto FINALIZAR
+)
 set "CAIXA_ENTRADA=%RAIZ_PROJETO%\pedidos_pdf\entrada"
 set "RELATORIOS=%RAIZ_PROJETO%\pedidos_pdf\relatorios"
 set "CONTROLE=%RAIZ_PROJETO%\pedidos_pdf\.controle"
@@ -31,10 +37,7 @@ if not defined PYTHON_BIN (
     echo ERRO: Python nao encontrado. Crie a pasta .venv ou instale o Python.
     goto FINALIZAR
 )
-if not defined CODEX_BIN (
-    echo ERRO: Codex nao encontrado. Instale ou abra o aplicativo Codex e tente novamente.
-    goto FINALIZAR
-)
+if not defined CODEX_BIN echo AVISO: Codex nao encontrado. A API OpenAI sera usada se OPENAI_API_KEY estiver configurada.
 if not exist "%PROCESSADOR%" (
     echo ERRO: Processador nao encontrado: "%PROCESSADOR%"
     goto FINALIZAR
@@ -48,7 +51,7 @@ if /i "%~1"=="--verificar" (
     echo Configuracao valida.
     echo Projeto: %RAIZ_PROJETO%
     echo Python: %PYTHON_BIN%
-    echo Codex: %CODEX_BIN%
+    if defined CODEX_BIN (echo Codex: %CODEX_BIN%) else (echo Codex: nao encontrado; fallback via API)
     echo Entrada: %CAIXA_ENTRADA%
     set "RESULTADO=0"
     goto FINALIZAR
@@ -63,17 +66,18 @@ if errorlevel 1 (
     echo Ja existe um processamento em lote em andamento.
     goto FINALIZAR
 )
+set "TRAVA_ADQUIRIDA=1"
 
 echo Caixa de entrada: %CAIXA_ENTRADA%
-echo Iniciando processamento dos PDFs novos...
+echo Iniciando atualizacao diaria do indice e processamento dos PDFs novos...
 
 "%PYTHON_BIN%" "%PROCESSADOR%" --projeto "%RAIZ_PROJETO%" --codex "%CODEX_BIN%"
 set "RESULTADO=%ERRORLEVEL%"
 
-rmdir "%TRAVA%" 2>nul
 set "PODE_ABRIR_RELATORIO=1"
 
 :FINALIZAR
+if "%TRAVA_ADQUIRIDA%"=="1" rmdir "%TRAVA%" 2>nul
 echo.
 if "%PODE_ABRIR_RELATORIO%"=="1" (
     set "ULTIMO_RELATORIO="

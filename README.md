@@ -394,8 +394,14 @@ obrigatórios.
 ## Processamento de vários PDFs pelo Codex
 
 1. Coloque os pedidos em `pedidos_pdf/entrada`.
-2. Execute `./pedidos_pdf/processar_pedidos_lote.sh`.
+2. Execute `./pedidos_pdf/processar_pedidos_lote_mac.sh` no macOS ou
+   `pedidos_pdf\processar_pedidos_lote_windows.bat` no Windows.
 3. Consulte a pasta mais recente em `pedidos_pdf/relatorios`.
+
+Antes dos PDFs, o lançador verifica se **Atualizar índice** já terminou com sucesso
+no dia atual para as mesmas pastas configuradas. Se ainda não terminou, executa o
+scan local automaticamente e mostra o progresso no terminal. Uma atualização feita
+pelo botão do aplicativo também conta; o marcador só é gravado após a conclusão.
 
 Cada PDF novo recebe uma execução isolada do prompt. O controle usa o conteúdo do
 arquivo, e não apenas o nome: um PDF concluído continua sendo reconhecido se for
@@ -403,6 +409,14 @@ renomeado. Os relatórios do lote separam sucessos, falhas e arquivos já proces
 O arquivo `historico_processados.csv` lista todos os pedidos concluídos até o momento.
 Qualquer pendência é classificada como falha. Falhas ficam no histórico e são tentadas
 novamente na execução seguinte.
+
+O Codex CLI é o provedor principal da extração. Se estiver ausente, exceder o tempo
+limite, encerrar com erro ou retornar uma extração inválida, o mesmo PDF é enviado à
+Responses API da OpenAI como fallback. Configure `OPENAI_API_KEY` no `.env`; o modelo
+pode ser alterado com `OPENAI_ORDER_MODEL` (padrão: `gpt-4o-mini`). As respostas da API
+não são armazenadas (`store=false`). Os limites opcionais são
+`CODEX_ORDER_TIMEOUT_SECONDS` (padrão: 600) e `OPENAI_ORDER_TIMEOUT_SECONDS` (padrão:
+300). O terminal e o log informam qual provedor concluiu a extração.
 
 ## Instalação para testar com Python
 

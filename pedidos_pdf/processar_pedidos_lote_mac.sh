@@ -4,6 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RAIZ_PROJETO="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$RAIZ_PROJETO"
 CAIXA_ENTRADA="$RAIZ_PROJETO/pedidos_pdf/entrada"
 RELATORIOS="$RAIZ_PROJETO/pedidos_pdf/relatorios"
 CONTROLE="$RAIZ_PROJETO/pedidos_pdf/.controle"
@@ -20,8 +21,8 @@ trap 'rmdir "$TRAVA" 2>/dev/null || true' EXIT INT TERM
 if command -v codex >/dev/null 2>&1; then
   CODEX_BIN="$(command -v codex)"
 else
-  echo "Codex nao encontrado no PATH. Instale o comando codex e tente novamente."
-  exit 1
+  CODEX_BIN=""
+  echo "AVISO: Codex nao encontrado. A API OpenAI sera usada se OPENAI_API_KEY estiver configurada."
 fi
 
 if [[ -x "$RAIZ_PROJETO/.venv/bin/python" ]]; then
@@ -31,7 +32,7 @@ else
 fi
 
 echo "Caixa de entrada: $CAIXA_ENTRADA"
-echo "Iniciando processamento dos PDFs novos..."
+echo "Iniciando atualizacao diaria do indice e processamento dos PDFs novos..."
 
 "$PYTHON_BIN" "$RAIZ_PROJETO/meury_app/batch_order_processor.py" \
   --projeto "$RAIZ_PROJETO" \

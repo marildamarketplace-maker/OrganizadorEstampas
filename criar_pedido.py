@@ -9,7 +9,7 @@ from pathlib import Path
 
 from meury_app.config import load_config
 from meury_app.indexer import build_index, load_index
-from meury_app.processor import clean_order_date, process_order_json, safe_folder_name
+from meury_app.processor import create_order_response
 
 
 def parse_args() -> argparse.Namespace:
@@ -57,36 +57,7 @@ def main() -> int:
     if not index:
         index, _ = build_index(sources)
 
-    results, summary = process_order_json(json_text, output, index)
-    _, date_folder = clean_order_date(results[0].data) if results else ("", "")
-    response = {
-        "sucesso": True,
-        "pedido": results[0].pedido if results else "",
-        "pastaPedido": str(
-            output
-            / safe_folder_name(results[0].cliente)
-            / date_folder
-            / safe_folder_name(results[0].pedido)
-        ) if results else "",
-        "copiados": summary.copiados,
-        "arquivosCopiados": [
-            item.arquivo_procurado for item in results if item.status == "COPIADO"
-        ],
-        "naoEncontrados": summary.nao_encontrados,
-        "estampasNaoEncontradas": [
-            item.arquivo_procurado for item in results if item.status == "NÃO ENCONTRADO"
-        ],
-        "duplicados": summary.duplicados,
-        "estampasDuplicadas": [
-            item.arquivo_procurado for item in results if item.status == "DUPLICADO"
-        ],
-        "jaExistentesOuIgnorados": summary.ignorados,
-        "arquivosJaExistentes": [
-            item.arquivo_procurado for item in results if item.status == "JÁ EXISTE"
-        ],
-        "erros": [],
-        "relatorio": summary.report_xlsx,
-    }
+    response = create_order_response(json_text, output, index)
     print(json.dumps(response, ensure_ascii=False, indent=2))
     return 0
 

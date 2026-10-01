@@ -23,12 +23,13 @@ from .config import (
     OPERATIONAL_DB_FILE,
     SUPPORTED_EXTENSIONS,
     ensure_app_dir,
-    resolve_record_path,
+    join_indexed_image_path,
 )
 from .asset_identity import relative_asset_identity
 from .index_progress import IndexProgress
 from .index_diagnostics import ACTIVE_METRICS, count, measured, new_metrics, stage
 from .index_journal import CandidateJournal, catalog_lock, physical_signature
+from .index_run_state import record_index_update, state_file_for
 from .operational_store import (
     overlay_records, record_quarantine_issues, record_scan_summary, sync_records,
 )
@@ -497,17 +498,12 @@ def _load_catalog(source_dirs: list[Path] | None = None,
                 source_number = int(record.get("source", 0))
                 if not 0 <= source_number < len(source_dirs):
                     return None
-                if for_scan:
-                    # A varredura não segue links e fornece o caminho observado.
-                    # Consumidores de cópia continuam usando a resolução física.
-                    relative = Path(str(record.get("relative_path", "")).replace("\\", "/"))
-                    if relative.is_absolute() or relative.drive or relative.root or ".." in relative.parts:
-                        raise ValueError("Caminho inválido no catálogo de estampas.")
-                    record["path"] = str(source_dirs[source_number] / relative)
-                else:
-                    record["path"] = str(resolve_record_path(record, source_dirs))
+                record["path"] = str(join_indexed_image_path(
+                    record.get("relative_path", ""),
+                    root=source_dirs[source_number],
+                ))
                 if progress:
-                    progress.report("Resolvendo caminhos", current, len(records))
+                    progress.report("Montando caminhos", current, len(records))
     return header, records
 
 
@@ -523,9 +519,19 @@ def _analysis_results_path() -> Path:
     return INDEX_FILE.with_name(ANALYSIS_RESULTS_FILE.name)
 
 
+class ImageIndex(dict[str, list[str]]):
+    """Índice de busca que preserva as raízes usadas para validar cópias."""
+
+    def __init__(self, *args, source_dirs: list[Path] | None = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.source_dirs = tuple(source_dirs or ())
+
+
 @measured("lookup_build")
-def _index_from_records(records: list[dict]) -> dict[str, list[str]]:
-    index: dict[str, list[str]] = {}
+def _index_from_records(
+    records: list[dict], source_dirs: list[Path] | None = None,
+) -> ImageIndex:
+    index = ImageIndex(source_dirs=source_dirs)
     for record in records:
         if record.get("active", True):
             index.setdefault(record["key"], []).append(record["path"])
@@ -659,7 +665,8 @@ def load_index_payload(source_dirs: Path | list[Path] | None = None) -> dict | N
         return None
     header, records = loaded
     return {
-        **header, "version": INDEX_VERSION, "index": _index_from_records(records),
+        **header, "version": INDEX_VERSION,
+        "index": _index_from_records(records, sources),
         "records": records,
     }
 
@@ -1134,11 +1141,12 @@ def build_index(source_dirs, progress_callback=None) -> tuple[dict[str, list[str
     (records, _stats, scanned, _dirty_records, quarantine_issues), journal = _scan_with_journal(
         sources, previous[1] if previous else [], progress,
     )
-    index = _index_from_records(records)
+    index = _index_from_records(records, sources)
     _write_catalog(records, sources, progress=progress)
     record_quarantine_issues(_operational_db_path(), quarantine_issues)
     duplicates_log = _write_duplicates(index)
     journal.complete()
+    record_index_update(sources, state_file=state_file_for(INDEX_FILE))
     progress.report("Índice concluído", scanned, scanned, force=True)
     return index, IndexResult(
         scanned, len(index), sum(len(value) > 1 for value in index.values()),
@@ -1160,7 +1168,7 @@ def update_index_incremental(source_dirs, progress_callback=None):
     (records, stats, scanned, dirty_records, quarantine_issues), journal = _scan_with_journal(
         sources, previous[1], progress,
     )
-    index = _index_from_records(records)
+    index = _index_from_records(records, sources)
     if dirty_records:
         _write_catalog(records, sources, operational_records=dirty_records, progress=progress)
         duplicates_log = _write_duplicates(index)
@@ -1182,6 +1190,7 @@ def update_index_incremental(source_dirs, progress_callback=None):
     with stage("scan_summary"):
         record_scan_summary(_operational_db_path(), result)
     journal.complete()
+    record_index_update(sources, state_file=state_file_for(INDEX_FILE))
     progress.report("Índice concluído", scanned, scanned, force=True,
                     detail=f"Novos: {stats['added']:,}; inalterados: {stats['unchanged']:,}; erros: {stats['errors']:,}")
     return index, result

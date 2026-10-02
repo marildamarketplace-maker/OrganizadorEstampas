@@ -3,6 +3,7 @@ import io
 import json
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -11,9 +12,11 @@ from unittest.mock import Mock, patch
 from meury_app.batch_order_processor import (
     api_compatible_schema,
     build_prompt,
+    discover_codex_models,
     extract_with_fallback,
     main as batch_main,
     move_to_completed,
+    run_codex,
     run_creator,
     run_openai_api,
     valid_extraction,
@@ -170,6 +173,184 @@ class BatchOrderPromptTest(unittest.TestCase):
             ))
             self.assertNotIn(str(root), request["input"][0]["content"][1]["text"])
             self.assertNotIn("OPENAI_API_KEY", log.read_text(encoding="utf-8"))
+
+    def test_codex_uses_requested_model_chain_with_high_reasoning(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            codex = root / "codex"
+            codex.write_text("", encoding="utf-8")
+            final_path = root / "final.json"
+
+            def complete(command, **_kwargs):
+                model = command[command.index("--model") + 1]
+                if model == "gpt-6-astra":
+                    final_path.write_text(
+                        json.dumps({"pedido": "incompleto"}), encoding="utf-8"
+                    )
+                    return SimpleNamespace(returncode=0, stdout="ok")
+                if model == "gpt-5.5":
+                    final_path.write_text(
+                        json.dumps(self.valid_order()), encoding="utf-8"
+                    )
+                    return SimpleNamespace(returncode=0, stdout="ok")
+                return SimpleNamespace(returncode=1, stdout="falha transitória")
+
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch(
+                    "meury_app.batch_order_processor.discover_codex_models",
+                    return_value=(
+                        "gpt-6-astra",
+                        "gpt-5.6-sol",
+                        "gpt-5.6-terra",
+                        "gpt-5.6-luna",
+                        "gpt-5.5",
+                    ),
+                ),
+                patch(
+                    "meury_app.batch_order_processor.subprocess.run",
+                    side_effect=complete,
+                ) as subprocess_run,
+            ):
+                result = run_codex(
+                    codex,
+                    root,
+                    root / "pedido.pdf",
+                    root / "schema.json",
+                    final_path,
+                    root / "codex.log",
+                )
+
+            self.assertEqual(result["pedido"], "20003945")
+            commands = [call.args[0] for call in subprocess_run.call_args_list]
+            self.assertEqual(
+                [command[command.index("--model") + 1] for command in commands],
+                [
+                    "gpt-6-astra",
+                    "gpt-5.6-sol",
+                    "gpt-5.6-terra",
+                    "gpt-5.6-luna",
+                    "gpt-5.5",
+                ],
+            )
+            for command in commands:
+                self.assertIn("--config", command)
+                self.assertIn('model_reasoning_effort="high"', command)
+
+    def test_codex_continues_with_next_model_after_timeout(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            codex = root / "codex"
+            codex.write_text("", encoding="utf-8")
+            final_path = root / "final.json"
+            calls = 0
+
+            def complete(command, **_kwargs):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    raise subprocess.TimeoutExpired(command, 1, output="parcial")
+                final_path.write_text(
+                    json.dumps(self.valid_order()), encoding="utf-8"
+                )
+                return SimpleNamespace(returncode=0, stdout="ok")
+
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch(
+                    "meury_app.batch_order_processor.discover_codex_models",
+                    return_value=("gpt-6-astra", "gpt-5.6-sol"),
+                ),
+                patch(
+                    "meury_app.batch_order_processor.subprocess.run",
+                    side_effect=complete,
+                ) as subprocess_run,
+            ):
+                result = run_codex(
+                    codex,
+                    root,
+                    root / "pedido.pdf",
+                    root / "schema.json",
+                    final_path,
+                    root / "codex.log",
+                )
+
+            self.assertEqual(result["pedido"], "20003945")
+            commands = [call.args[0] for call in subprocess_run.call_args_list]
+            self.assertEqual(
+                [command[command.index("--model") + 1] for command in commands],
+                ["gpt-6-astra", "gpt-5.6-sol"],
+            )
+
+    def test_discovers_visible_codex_models_in_catalog_order(self):
+        catalog = {
+            "models": [
+                {"slug": "modelo-a", "visibility": "list"},
+                {"slug": "oculto", "visibility": "hide"},
+                {"slug": "modelo-b", "visibility": "list"},
+                {"slug": "modelo-a", "visibility": "list"},
+                {"slug": "", "visibility": "list"},
+            ]
+        }
+        discover_codex_models.cache_clear()
+        with patch(
+            "meury_app.batch_order_processor.subprocess.run",
+            return_value=SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(catalog),
+                stderr="",
+            ),
+        ) as subprocess_run:
+            models = discover_codex_models(Path("/bin/codex-teste"))
+        discover_codex_models.cache_clear()
+
+        self.assertEqual(models, ("modelo-a", "modelo-b"))
+        self.assertEqual(
+            subprocess_run.call_args.args[0],
+            ["/bin/codex-teste", "debug", "models"],
+        )
+
+    def test_uses_static_model_chain_when_catalog_discovery_fails(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            codex = root / "codex"
+            codex.write_text("", encoding="utf-8")
+            final_path = root / "final.json"
+            log_path = root / "codex.log"
+
+            def complete(command, **_kwargs):
+                final_path.write_text(
+                    json.dumps(self.valid_order()), encoding="utf-8"
+                )
+                return SimpleNamespace(returncode=0, stdout="ok")
+
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch(
+                    "meury_app.batch_order_processor.discover_codex_models",
+                    side_effect=RuntimeError("catálogo indisponível"),
+                ),
+                patch(
+                    "meury_app.batch_order_processor.subprocess.run",
+                    side_effect=complete,
+                ) as subprocess_run,
+            ):
+                result = run_codex(
+                    codex,
+                    root,
+                    root / "pedido.pdf",
+                    root / "schema.json",
+                    final_path,
+                    log_path,
+                )
+
+            self.assertEqual(result["pedido"], "20003945")
+            command = subprocess_run.call_args.args[0]
+            self.assertEqual(command[command.index("--model") + 1], "gpt-6-astra")
+            self.assertIn(
+                "Origem: lista de contingência",
+                log_path.read_text(encoding="utf-8"),
+            )
 
     def test_schema_removes_unsupported_validation_keywords(self):
         with tempfile.TemporaryDirectory() as temporary:

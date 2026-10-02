@@ -13,6 +13,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Sequence
 
@@ -28,8 +29,15 @@ from meury_app.processor import create_order_response
 FINAL_SUCCESS = {"SUCESSO"}
 EXTRACTION_VERSION = 1
 DEFAULT_OPENAI_ORDER_MODEL = "gpt-4o-mini"
-DEFAULT_CODEX_ORDER_MODEL = "gpt-6.1-sol"
-DEFAULT_CODEX_ORDER_MODEL_FALLBACKS = ("gpt-6-luna", "gpt-5.6-terra")
+DEFAULT_CODEX_ORDER_MODEL = "gpt-6-astra"
+DEFAULT_CODEX_ORDER_MODEL_FALLBACKS = (
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+    "gpt-5.5",
+)
+DEFAULT_CODEX_REASONING_EFFORT = "high"
+DEFAULT_CODEX_MODEL_DISCOVERY_TIMEOUT_SECONDS = 30
 DEFAULT_CODEX_TIMEOUT_SECONDS = 600
 DEFAULT_OPENAI_TIMEOUT_SECONDS = 300
 MAX_API_PDF_BYTES = 50 * 1024 * 1024
@@ -247,16 +255,51 @@ def build_prompt(project: Path, pdf_path: Path) -> str:
     )
 
 
-def run_codex(
-    codex: Path | None,
-    project: Path,
-    pdf_path: Path,
-    schema_path: Path,
-    final_path: Path,
-    log_path: Path,
-) -> Dict[str, Any]:
-    if codex is None or not codex.is_file():
-        raise RuntimeError("Codex CLI não está disponível.")
+@lru_cache(maxsize=4)
+def discover_codex_models(codex: Path) -> tuple[str, ...]:
+    """Lê o catálogo da CLI e preserva a ordem dos modelos visíveis."""
+    try:
+        completed = subprocess.run(
+            [str(codex), "debug", "models"],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=DEFAULT_CODEX_MODEL_DISCOVERY_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("A consulta do catálogo de modelos do Codex expirou.") from exc
+
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"A consulta do catálogo de modelos terminou com código "
+            f"{completed.returncode}."
+        )
+    try:
+        catalog = json.loads(completed.stdout or "")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("O catálogo de modelos do Codex não retornou JSON válido.") from exc
+
+    entries = catalog.get("models") if isinstance(catalog, dict) else None
+    if not isinstance(entries, list):
+        raise RuntimeError("O catálogo do Codex não contém uma lista de modelos.")
+
+    visible_models = tuple(dict.fromkeys(
+        slug
+        for item in entries
+        if isinstance(item, dict) and item.get("visibility") == "list"
+        for slug in [str(item.get("slug", "")).strip()]
+        if slug
+    ))
+    if not visible_models:
+        raise RuntimeError("O catálogo do Codex não contém modelos visíveis.")
+    return visible_models
+
+
+def fallback_codex_models() -> tuple[str, ...]:
+    """Mantém uma cadeia operacional caso a consulta dinâmica não esteja disponível."""
     primary_model = (
         os.environ.get("CODEX_ORDER_MODEL", "").strip()
         or DEFAULT_CODEX_ORDER_MODEL
@@ -267,14 +310,38 @@ def run_codex(
         if configured_fallbacks
         else DEFAULT_CODEX_ORDER_MODEL_FALLBACKS
     )
-    models = tuple(dict.fromkeys((primary_model, *fallback_models)))
-    attempts: list[str] = []
+    return tuple(dict.fromkeys((primary_model, *fallback_models)))
+
+
+def run_codex(
+    codex: Path | None,
+    project: Path,
+    pdf_path: Path,
+    schema_path: Path,
+    final_path: Path,
+    log_path: Path,
+) -> Dict[str, Any]:
+    if codex is None or not codex.is_file():
+        raise RuntimeError("Codex CLI não está disponível.")
+    try:
+        models = discover_codex_models(codex)
+        catalog_source = "catálogo dinâmico da CLI"
+    except (OSError, RuntimeError) as exc:
+        models = fallback_codex_models()
+        catalog_source = f"lista de contingência; catálogo indisponível: {exc}"
+    attempts = [
+        "=== ORDEM DE MODELOS CODEX ===\n"
+        f"Origem: {catalog_source}\n"
+        + "\n".join(f"{position}. {model}" for position, model in enumerate(models, 1))
+    ]
 
     for model in models:
         final_path.unlink(missing_ok=True)
         command = [
             str(codex),
             "exec",
+            "--config",
+            f'model_reasoning_effort="{DEFAULT_CODEX_REASONING_EFFORT}"',
             "--cd",
             str(project),
             "--sandbox",
@@ -305,36 +372,38 @@ def run_codex(
             output = exc.stdout or ""
             if isinstance(output, bytes):
                 output = output.decode("utf-8", errors="replace")
-            attempts.append(f"=== MODELO {model} ===\n{output}")
+            attempts.append(
+                f"=== MODELO {model} ===\n"
+                f"ERRO: tempo limite excedido.\n{output}"
+            )
             log_path.write_text("\n\n".join(attempts), encoding="utf-8")
-            raise RuntimeError("Codex excedeu o tempo limite da extração.") from exc
+            if model != models[-1]:
+                continue
+            raise RuntimeError(
+                "Todos os modelos Codex excederam ou falharam durante a extração. "
+                "Consulte o log desta execução para os detalhes."
+            ) from exc
 
         output = completed.stdout or ""
         attempts.append(f"=== MODELO {model} ===\n{output}")
         final_text = final_path.read_text(encoding="utf-8") if final_path.exists() else ""
         result = extract_json(final_text)
-        if completed.returncode == 0 and result:
+        if completed.returncode == 0 and valid_extraction(result):
             log_path.write_text("\n\n".join(attempts), encoding="utf-8")
             return result
 
-        output_lower = output.casefold()
-        model_unavailable = any(
-            marker in output_lower
-            for marker in (
-                "model is not supported",
-                "model is not available",
-                "unsupported model",
-                "unknown model",
-                "invalid model",
-            )
-        )
-        if model_unavailable and model != models[-1]:
+        if model != models[-1]:
             continue
 
         log_path.write_text("\n\n".join(attempts), encoding="utf-8")
-        message = f"Codex terminou com código {completed.returncode} usando {model}."
+        message = (
+            "Todos os modelos Codex falharam. "
+            f"A última tentativa terminou com código {completed.returncode} usando {model}."
+        )
         if not result:
             message += " A resposta final não continha um relatório JSON válido."
+        elif not valid_extraction(result):
+            message += " A extração retornada estava incompleta ou inválida."
         if output:
             message += " Consulte o log desta execução para os detalhes."
         raise RuntimeError(message)

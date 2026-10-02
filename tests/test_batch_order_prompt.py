@@ -1,8 +1,10 @@
-from pathlib import Path
-from types import SimpleNamespace
+from contextlib import redirect_stdout
+import io
 import json
 import os
+from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
@@ -10,10 +12,13 @@ from meury_app.batch_order_processor import (
     api_compatible_schema,
     build_prompt,
     extract_with_fallback,
+    main as batch_main,
     move_to_completed,
     run_creator,
     run_openai_api,
     valid_extraction,
+    validation_requirements,
+    write_final_action_log,
 )
 from meury_app.indexer import image_key
 
@@ -233,6 +238,114 @@ class BatchOrderPromptTest(unittest.TestCase):
             with patch.dict(os.environ, {}, clear=True):
                 with self.assertRaisesRegex(RuntimeError, "OPENAI_API_KEY"):
                     run_openai_api(pdf, root / "schema.json", root / "log.txt")
+
+    def test_validation_requirements_explains_missing_duplicates_and_errors(self):
+        reasons, actions = validation_requirements({
+            "resultadoFinal": "FALHA",
+            "naoEncontradas": ["6162-A"],
+            "duplicadas": [{"estampa": "7001-X", "arquivos": ["a.pdf", "b.pdf"]}],
+            "erros": ["pasta sem permissão"],
+        })
+
+        self.assertTrue(any("6162-A" in reason for reason in reasons))
+        self.assertTrue(any("7001-X" in reason for reason in reasons))
+        self.assertTrue(any("pasta sem permissão" in reason for reason in reasons))
+        self.assertTrue(any("reprocessar" in action for action in actions))
+
+    def test_final_log_is_explicit_and_lists_all_pdfs_by_required_action(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            run_dir = Path(temporary)
+            final_log_path = run_dir / "LOG_FINAL_ACAO_HUMANA.txt"
+            rows = [
+                {
+                    "arquivo": "pedido_com_erro.pdf",
+                    "pedido": "2001",
+                    "resultado": "FALHA",
+                    "validacoes": ["Estampa não encontrada: 6162-A"],
+                    "acoes": ["Cadastrar a estampa e reprocessar."],
+                    "relatorioJson": str(run_dir / "001.json"),
+                    "logIndividual": str(run_dir / "001.log"),
+                },
+                {
+                    "arquivo": "pedido_ok\nforjado.pdf",
+                    "pedido": "2002",
+                    "resultado": "SUCESSO",
+                    "validacoes": [],
+                    "acoes": [],
+                },
+            ]
+
+            content = write_final_action_log(
+                final_log_path,
+                rows,
+                run_dir=run_dir,
+                generated_at="2026-10-02T10:00:00-03:00",
+            )
+
+            self.assertEqual(final_log_path.read_text(encoding="utf-8"), content)
+            self.assertIn("LOG FINAL DO PROCESSAMENTO DE PDFs", content)
+            self.assertIn("STATUS GERAL: AÇÃO HUMANA NECESSÁRIA", content)
+            self.assertIn("PDFs que exigem ação humana: 1", content)
+            self.assertIn("pedido_com_erro.pdf", content)
+            self.assertIn("Por que precisa de validação", content)
+            self.assertIn("Cadastrar a estampa e reprocessar", content)
+            self.assertIn(r"pedido_ok\nforjado.pdf", content)
+            self.assertNotIn("pedido_ok\nforjado.pdf", content)
+
+    def test_batch_main_writes_final_action_log_with_processing_reason(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            project = Path(temporary)
+            input_dir = project / "pedidos_pdf" / "entrada"
+            input_dir.mkdir(parents=True)
+            (input_dir / "pedido.pdf").write_bytes(b"%PDF-1.4")
+            extraction_dir = project / "pedidos_pdf" / ".controle" / "extracoes"
+            extraction_dir.mkdir(parents=True)
+            (extraction_dir / "v1_hash-teste.json").write_text(
+                json.dumps(self.valid_order()), encoding="utf-8"
+            )
+            creator_result = {
+                "pedido": "20003945",
+                "pastaCriada": "",
+                "quantidadeCopiada": 0,
+                "copiadas": [],
+                "naoEncontradas": ["6162-A"],
+                "duplicadas": [],
+                "jaExistentes": [],
+                "erros": [],
+                "resultadoFinal": "FALHA",
+            }
+
+            with (
+                patch(
+                    "meury_app.batch_order_processor.parse_args",
+                    return_value=SimpleNamespace(projeto=str(project), codex=""),
+                ),
+                patch("meury_app.batch_order_processor.load_local_environment"),
+                patch(
+                    "meury_app.batch_order_processor.load_order_context",
+                    return_value=(project / "saida", {}),
+                ),
+                patch(
+                    "meury_app.batch_order_processor.file_hash",
+                    return_value="hash-teste",
+                ),
+                patch(
+                    "meury_app.batch_order_processor.run_creator",
+                    return_value=creator_result,
+                ),
+                redirect_stdout(io.StringIO()),
+            ):
+                exit_code = batch_main()
+
+            report_dirs = list((project / "pedidos_pdf" / "relatorios").iterdir())
+            self.assertEqual(exit_code, 1)
+            self.assertEqual(len(report_dirs), 1)
+            final_log = (
+                report_dirs[0] / "LOG_FINAL_ACAO_HUMANA.txt"
+            ).read_text(encoding="utf-8")
+            self.assertIn("pedido.pdf", final_log)
+            self.assertIn("Estampa não encontrada: 6162-A", final_log)
+            self.assertIn("AÇÃO HUMANA NECESSÁRIA", final_log)
 
 
 if __name__ == "__main__":

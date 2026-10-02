@@ -14,7 +14,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List
+from typing import Any, Callable, Dict, Iterable, List, Sequence
 
 if __package__ in {None, ""}:  # Compatibilidade com execução direta deste arquivo.
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -595,6 +595,147 @@ def write_csv(path: Path, rows: Iterable[Dict[str, Any]]) -> None:
             writer.writerow({field: row.get(field, "") for field in fields})
 
 
+def _human_value(value: Any) -> str:
+    if isinstance(value, (dict, list)):
+        rendered = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    else:
+        rendered = str(value)
+    return rendered.replace("\r", "\\r").replace("\n", "\\n").replace("\t", "\\t")
+
+
+def validation_requirements(result: Dict[str, Any]) -> tuple[List[str], List[str]]:
+    """Traduz o resultado técnico em motivos e ações para conferência humana."""
+    reasons: List[str] = []
+    actions: List[str] = []
+
+    missing = result.get("naoEncontradas") or []
+    if missing:
+        reasons.extend(
+            f"Estampa não encontrada: {_human_value(value)}" for value in missing
+        )
+        actions.append(
+            "Conferir os códigos/variantes no PDF e cadastrar ou disponibilizar "
+            "os arquivos de estampa ausentes antes de reprocessar."
+        )
+
+    duplicates = result.get("duplicadas") or []
+    if duplicates:
+        reasons.extend(
+            f"Estampa com mais de um arquivo candidato: {_human_value(value)}"
+            for value in duplicates
+        )
+        actions.append(
+            "Escolher o arquivo correto de cada estampa duplicada, corrigir a "
+            "duplicidade no catálogo e reprocessar."
+        )
+
+    errors = result.get("erros") or []
+    if errors:
+        reasons.extend(
+            f"Erro de processamento: {_human_value(value)}" for value in errors
+        )
+        actions.append(
+            "Corrigir o erro informado, confirmar os dados do pedido e reprocessar o PDF."
+        )
+
+    outcome = str(result.get("resultadoFinal", "FALHA")).upper()
+    if outcome != "SUCESSO" and not reasons:
+        reasons.append(
+            "O processamento terminou sem sucesso e não informou um motivo específico."
+        )
+        actions.append(
+            "Abrir o relatório JSON e o log individual deste PDF, identificar a causa "
+            "e reprocessar."
+        )
+    return reasons, actions
+
+
+def write_final_action_log(
+    path: Path,
+    rows: Sequence[Dict[str, Any]],
+    *,
+    run_dir: Path,
+    generated_at: str,
+) -> str:
+    """Grava o resumo definitivo do lote, priorizando as ações humanas pendentes."""
+    pending = [row for row in rows if row.get("validacoes")]
+    clear = [row for row in rows if not row.get("validacoes")]
+    successes = sum(row.get("resultado") == "SUCESSO" for row in rows)
+    failures = sum(row.get("resultado") == "FALHA" for row in rows)
+    skipped = sum(row.get("resultado") == "JÁ PROCESSADO" for row in rows)
+    overall = (
+        "AÇÃO HUMANA NECESSÁRIA"
+        if pending
+        else "LOTE CONCLUÍDO SEM PENDÊNCIAS DE VALIDAÇÃO"
+    )
+
+    lines = [
+        "=" * 78,
+        "LOG FINAL DO PROCESSAMENTO DE PDFs — ORIENTADO À AÇÃO HUMANA",
+        "=" * 78,
+        f"STATUS GERAL: {overall}",
+        f"Gerado em: {generated_at}",
+        f"Pasta dos relatórios: {_human_value(run_dir)}",
+        "",
+        "Este é o LOG FINAL desta execução. Use a seção 'AÇÃO HUMANA NECESSÁRIA'",
+        "como lista de trabalho; os logs individuais servem apenas para investigação.",
+        "",
+        "RESUMO DO LOTE",
+        f"- PDFs considerados: {len(rows)}",
+        f"- Processados com sucesso: {successes}",
+        f"- Falhas: {failures}",
+        f"- Já processados anteriormente: {skipped}",
+        f"- PDFs que exigem ação humana: {len(pending)}",
+        f"- PDFs sem pendência: {len(clear)}",
+        "",
+        "1. AÇÃO HUMANA NECESSÁRIA",
+    ]
+
+    if not pending:
+        lines.append("- Nenhuma validação ou correção humana foi identificada.")
+    for position, row in enumerate(pending, start=1):
+        lines.extend(
+            [
+                "",
+                "[{}] PDF: {}".format(
+                    position, _human_value(row.get("arquivo") or "(não informado)")
+                ),
+                "    Pedido: "
+                f"{_human_value(row.get('pedido') or '(não identificado)')}",
+                "    Resultado técnico: "
+                f"{_human_value(row.get('resultado') or '(não informado)')}",
+                "    Por que precisa de validação:",
+            ]
+        )
+        lines.extend(
+            f"      - {_human_value(reason)}"
+            for reason in row.get("validacoes") or []
+        )
+        lines.append("    Ação humana necessária:")
+        lines.extend(
+            f"      - {_human_value(action)}" for action in row.get("acoes") or []
+        )
+        if row.get("relatorioJson"):
+            lines.append(f"    Relatório JSON: {_human_value(row['relatorioJson'])}")
+        if row.get("logIndividual"):
+            lines.append(f"    Log individual: {_human_value(row['logIndividual'])}")
+
+    lines.extend(["", "2. PDFs SEM PENDÊNCIA DE AÇÃO HUMANA"])
+    if not clear:
+        lines.append("- Nenhum.")
+    for row in clear:
+        lines.append(
+            f"- {_human_value(row.get('arquivo') or '(não informado)')} | "
+            f"pedido {_human_value(row.get('pedido') or '(não identificado)')} | "
+            f"{_human_value(row.get('resultado') or '(não informado)')}"
+        )
+
+    lines.extend(["", "FIM DO LOG FINAL", "=" * 78, ""])
+    content = "\n".join(lines)
+    path.write_text(content, encoding="utf-8")
+    return content
+
+
 def print_result_details(result: Dict[str, Any]) -> None:
     """Mostra no terminal o mesmo resultado relevante salvo no relatório JSON."""
     print(f"  Pedido: {result.get('pedido') or '(não identificado)'}")
@@ -653,6 +794,7 @@ def main() -> int:
     success_rows: List[Dict[str, Any]] = []
     failure_rows: List[Dict[str, Any]] = []
     skipped_rows: List[Dict[str, Any]] = []
+    processed_rows: List[Dict[str, Any]] = []
     order_context: tuple[Path, dict[str, list[str]]] | None = None
 
     try:
@@ -676,19 +818,19 @@ def main() -> int:
         print(f"[{position}/{len(pdfs)}] Processando: {pdf_path.name}", flush=True)
         if digest in successful_records:
             previous = successful_records[digest]
-            skipped_rows.append(
-                {
-                    "arquivo": pdf_path.name,
-                    "pedido": previous.get("pedido", ""),
-                    "resultado": "JÁ PROCESSADO",
-                    "dataProcessamento": previous.get("dataProcessamento", ""),
-                    "sha256": digest,
-                    "detalhes": (
-                        "Mesmo conteúdo de um PDF concluído anteriormente. "
-                        f"Nome registrado: {previous.get('arquivo', '')}"
-                    ),
-                }
-            )
+            row = {
+                "arquivo": pdf_path.name,
+                "pedido": previous.get("pedido", ""),
+                "resultado": "JÁ PROCESSADO",
+                "dataProcessamento": previous.get("dataProcessamento", ""),
+                "sha256": digest,
+                "detalhes": (
+                    "Mesmo conteúdo de um PDF concluído anteriormente. "
+                    f"Nome registrado: {previous.get('arquivo', '')}"
+                ),
+                "validacoes": [],
+                "acoes": [],
+            }
             print("  Resultado: JÁ PROCESSADO")
             print(f"  Pedido: {previous.get('pedido') or '(não identificado)'}")
             try:
@@ -696,6 +838,13 @@ def main() -> int:
                 print(f"  PDF movido para: {completed_path}")
             except OSError as exc:
                 print(f"  AVISO: não foi possível mover o PDF concluído: {exc}")
+                row["validacoes"] = [f"PDF não foi movido para concluído: {exc}"]
+                row["acoes"] = [
+                    "Mover manualmente o PDF para a pasta 'concluido' e verificar "
+                    "permissões ou bloqueios no arquivo."
+                ]
+            skipped_rows.append(row)
+            processed_rows.append(row)
             continue
 
         report_base = f"{position:03d}_{safe_report_name(pdf_path)}"
@@ -796,14 +945,18 @@ def main() -> int:
             json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
-        errors = result.get("erros") or []
+        validations, actions = validation_requirements(result)
         row = {
             "arquivo": pdf_path.name,
             "pedido": result.get("pedido", ""),
             "resultado": outcome,
             "dataProcessamento": now_iso(),
             "sha256": digest,
-            "detalhes": " | ".join(str(value) for value in errors),
+            "detalhes": " | ".join(validations),
+            "validacoes": validations,
+            "acoes": actions,
+            "relatorioJson": str(final_path),
+            "logIndividual": str(log_path),
         }
         history_record = dict(row)
         history_record.update(
@@ -825,11 +978,19 @@ def main() -> int:
                 print(f"  PDF movido para: {completed_path}")
             except OSError as exc:
                 print(f"  AVISO: não foi possível mover o PDF concluído: {exc}")
+                row["validacoes"].append(f"PDF não foi movido para concluído: {exc}")
+                row["acoes"].append(
+                    "Mover manualmente o PDF para a pasta 'concluido' e verificar "
+                    "permissões ou bloqueios no arquivo."
+                )
+                row["detalhes"] = " | ".join(row["validacoes"])
+                history_record["detalhes"] = row["detalhes"]
             success_rows.append(row)
             successful_records[digest] = history_record
         else:
             failure_rows.append(row)
             print("  Este PDF será tentado novamente no próximo lote.")
+        processed_rows.append(row)
         append_history(history_path, history_record)
 
     write_csv(run_dir / "sucessos.csv", success_rows)
@@ -844,16 +1005,19 @@ def main() -> int:
     )
     write_csv(run_dir / "resumo_completo.csv", [*success_rows, *failure_rows, *skipped_rows])
 
-    print("")
-    print("Processamento concluído.")
-    print(f"Sucessos: {len(success_rows)}")
-    print(f"Falhas: {len(failure_rows)}")
-    print(f"Já processados: {len(skipped_rows)}")
     elapsed = round(time.monotonic() - started_at)
     minutes, seconds = divmod(elapsed, 60)
+    final_log_path = run_dir / "LOG_FINAL_ACAO_HUMANA.txt"
+    final_log = write_final_action_log(
+        final_log_path,
+        processed_rows,
+        run_dir=run_dir,
+        generated_at=now_iso(),
+    )
+    print("\n" + final_log, end="")
     print(f"Tempo total: {minutes} min {seconds:02d} s")
-    print(f"Relatórios: {run_dir}")
-    return 1 if failure_rows else 0
+    print(f"ARQUIVO DO LOG FINAL: {final_log_path}")
+    return 1 if any(row.get("validacoes") for row in processed_rows) else 0
 
 
 if __name__ == "__main__":

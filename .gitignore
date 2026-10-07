@@ -24,3 +24,5 @@ estampas/
 planilha_modelo_old.xlsx
 *.inspect.ndjson
 tmp/
+
+executar_windows.log

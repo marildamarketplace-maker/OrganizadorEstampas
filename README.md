@@ -135,10 +135,19 @@ dependências opcionais de `requirements-visual.txt`.
 
 ## Inicialização e recursos opcionais
 
-Use `executar_windows.bat` no Windows ou `executar_macos.command` no macOS. Os
-inicializadores trabalham sempre na pasta do projeto, criam a `.venv` quando
+Para abrir sem uma janela de terminal:
+
+- no Windows, dê duplo clique em `executar_windows.vbs`;
+- no macOS, dê duplo clique em `executar_macos.command` na primeira vez. Ele
+  cria e abre `Organizador de Estampas.app`; nas próximas vezes, abra o
+  aplicativo `.app` diretamente.
+
+Os lançadores trabalham sempre na pasta do projeto, criam a `.venv` quando
 necessário e instalam novamente as dependências básicas somente quando
-`requirements.txt` mudar ou algum pacote estiver ausente.
+`requirements.txt` mudar ou algum pacote estiver ausente. O Windows registra a
+saída em `executar_windows.log`; no macOS, o log fica em
+`~/Library/Logs/OrganizadorEstampas.log`. O `.bat` e o `.command` continuam
+disponíveis para diagnóstico.
 
 A análise de imagens, a busca semântica e a busca de semelhantes usam a API OpenAI.
 O aplicativo instala apenas bibliotecas leves e o índice FAISS local; não baixa

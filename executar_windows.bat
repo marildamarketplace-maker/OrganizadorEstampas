@@ -35,5 +35,5 @@ goto :failure
 echo ERRO: o aplicativo foi encerrado devido a uma falha.
 :failure
 echo.
-pause
+if not defined ORGANIZADOR_SEM_TERMINAL pause
 exit /b 1

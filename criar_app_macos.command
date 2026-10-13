@@ -16,7 +16,6 @@ on run
     set appPath to POSIX path of (path to me)
     set projectDir to do shell script "/usr/bin/dirname " & quoted form of appPath
     set startScript to projectDir & "/executar_macos.command"
-    set logFile to (POSIX path of (path to library folder from user domain)) & "Logs/OrganizadorEstampas.log"
 
     try
         do shell script "/bin/test -f " & quoted form of startScript
@@ -25,7 +24,10 @@ on run
         return
     end try
 
-    do shell script "/usr/bin/env ORGANIZADOR_SEM_TERMINAL=1 /usr/bin/nohup /bin/bash " & quoted form of startScript & " >> " & quoted form of logFile & " 2>&1 < /dev/null &"
+    tell application "Terminal"
+        activate
+        do script "/bin/bash " & quoted form of startScript
+    end tell
 end run
 APPLESCRIPT
 

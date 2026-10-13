@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
+from weakref import WeakValueDictionary
 from pathlib import Path
 from typing import Callable, Protocol
 from urllib.parse import quote
@@ -94,6 +96,8 @@ class GoogleCloudStorageConfig:
 
 
 class PreviewUploader(Protocol):
+    """Adaptadores injetados devem suportar chamadas simultâneas (ou usar 1 worker)."""
+
     def upload_preview(self, preview_path: Path, storage_key: str) -> str: ...
 
 
@@ -220,7 +224,11 @@ def upload_pending_previews(
     progress_callback: Callable[[int, int, str], None] | None = None,
     pause_event: threading.Event | None = None,
     allowed_asset_ids: set[str] | None = None,
+    max_workers: int | None = None,
 ) -> CloudUploadResult:
+    workers = max_workers if max_workers is not None else int(os.environ.get("MEURY_CLOUD_WORKERS", "4"))
+    if not 1 <= workers <= 8:
+        raise ValueError("Use de 1 a 8 workers para enviar previews.")
     records = load_catalog_records(source_dirs)
     if records is None:
         raise ValueError("Atualize o índice antes do envio para Cloud.")
@@ -251,13 +259,28 @@ def upload_pending_previews(
     ]
     if limit is not None:
         pending = pending[:limit]
-    if pending and uploader is None:
-        uploader = preview_uploader_from_environment()
+    # Clientes próprios por thread evitam compartilhar sessões dos SDKs.
+    initial_clients = [preview_uploader_from_environment()] if pending and uploader is None else []
+    client_lock = threading.Lock()
+    local = threading.local()
+
+    def get_uploader():
+        if uploader is not None:
+            return uploader
+        if not hasattr(local, "uploader"):
+            with client_lock:
+                client = initial_clients.pop() if initial_clients else None
+            local.uploader = client if client is not None else preview_uploader_from_environment()
+        return local.uploader
+
     started = time.monotonic()
     completed = failed = 0
-    for position, record in enumerate(pending, start=1):
-        if pause_event is not None:
-            pause_event.wait()
+    key_locks = WeakValueDictionary()
+    key_registry_lock = threading.Lock()
+
+    def upload_record(original_record):
+        # O worker devolve uma cópia; só o coordenador altera o catálogo e SQLite.
+        record = dict(original_record)
         try:
             preview = _resolve_derived_preview(record, allowed_dir)
             original = Path(str(record.get("path", ""))).expanduser().resolve()
@@ -269,9 +292,15 @@ def upload_pending_previews(
                 raise FileNotFoundError(f"Preview não encontrado: {preview}")
             key = preview_storage_key(record, preview)
             previous_key = str(record.get("storage_key", ""))
-            if uploader is None:  # Garantido pela inicialização sob demanda acima.
-                raise RuntimeError("Cliente Cloud indisponível.")
-            url, attempts = run_with_retry(lambda: uploader.upload_preview(preview, key))
+            client = get_uploader()
+            # Mantém locks apenas enquanto houver workers usando a mesma chave.
+            with key_registry_lock:
+                key_lock = key_locks.get(key)
+                if key_lock is None:
+                    key_lock = threading.Lock()
+                    key_locks[key] = key_lock
+            with key_lock:
+                url, attempts = run_with_retry(lambda: client.upload_preview(preview, key))
             record["cloud_attempts"] = int(record.get("cloud_attempts", 0)) + attempts
             record["cloud_last_attempt_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
             if not str(url).strip():
@@ -287,7 +316,7 @@ def upload_pending_previews(
                 record["supabase_content_hash"] = ""
             record["last_error"] = ""
             record["cloud_last_error"] = ""
-            completed += 1
+
         except RetryFailure as failure:
             exc = failure.cause
             record["cloud_attempts"] = int(record.get("cloud_attempts", 0)) + failure.attempts
@@ -295,7 +324,7 @@ def upload_pending_previews(
             record["cloud_status"] = "failed"
             record["last_error"] = f"Cloud: {type(exc).__name__}: {exc}"
             record["cloud_last_error"] = f"{type(exc).__name__}: {exc}"
-            failed += 1
+
         except Exception as exc:
             # Validações locais não entram no retry externo.
             record["cloud_attempts"] = int(record.get("cloud_attempts", 0)) + 1
@@ -303,13 +332,55 @@ def upload_pending_previews(
             record["cloud_status"] = "failed"
             record["last_error"] = f"Cloud: {type(exc).__name__}: {exc}"
             record["cloud_last_error"] = f"{type(exc).__name__}: {exc}"
-            failed += 1
-        sync_records(_operational_db_path(), [record])
-        if progress_callback:
-            progress_callback(
-                position, len(pending),
-                f"Enviando previews: {position:,} de {len(pending):,}",
-            )
+
+        return record
+
+    dirty = []
+    last_flush = time.monotonic()
+
+    def flush():
+        nonlocal last_flush
+        if dirty:
+            sync_records(_operational_db_path(), dirty)
+            dirty.clear()
+        last_flush = time.monotonic()
+
+    remaining = iter(pending)
+    scheduled = 0
+    exhausted = not pending
+    try:
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="meury-cloud") as executor:
+            running = {}
+            while running or not exhausted:
+                if pause_event is not None and not pause_event.is_set() and not running:
+                    flush()
+                    pause_event.wait()
+                while len(running) < workers and not exhausted:
+                    if pause_event is not None and not pause_event.is_set():
+                        break
+                    record = next(remaining)
+                    scheduled += 1
+                    exhausted = scheduled == len(pending)
+                    running[executor.submit(upload_record, record)] = record
+                if not running:
+                    continue
+                finished, _ = wait(running, timeout=0.5, return_when=FIRST_COMPLETED)
+                for future in finished:
+                    record = running.pop(future)
+                    record.update(future.result())
+                    completed += record["cloud_status"] == "completed"
+                    failed += record["cloud_status"] == "failed"
+                    dirty.append(record)
+                if len(dirty) >= 50 or time.monotonic() - last_flush >= 1:
+                    flush()
+                if finished and progress_callback:
+                    position = completed + failed
+                    progress_callback(
+                        position, len(pending),
+                        f"Enviando previews: {position:,} de {len(pending):,}",
+                    )
+    finally:
+        flush()
     return CloudUploadResult(
         pending=len(pending), completed=completed, failed=failed,
         elapsed_seconds=time.monotonic() - started,

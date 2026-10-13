@@ -9,19 +9,15 @@ if [ -z "$BASE_DIR" ] || ! cd "$BASE_DIR"; then
   exit 1
 fi
 
-# Ao abrir o .command pelo Finder, cria/atualiza um aplicativo e transfere a
-# inicialização para ele. O .app chama este script novamente em modo oculto.
-if [ "${ORGANIZADOR_SEM_TERMINAL:-0}" != "1" ]; then
-  /bin/bash "$BASE_DIR/criar_app_macos.command"
-  STATUS=$?
-  if [ $STATUS -ne 0 ]; then
-    echo "ERRO: não foi possível criar o aplicativo do macOS."
+# Execute no Terminal para que o macOS possa solicitar acesso a Documents.
+# Um applet em segundo plano pode receber Operation not permitted sem diálogo.
+pause_on_error() {
+  local status=$?
+  if [ "$status" -ne 0 ] && [ -t 0 ]; then
     read -r -p "Pressione Enter para fechar..."
-    exit $STATUS
   fi
-  /usr/bin/open "$BASE_DIR/Organizador de Estampas.app"
-  exit $?
-fi
+}
+trap pause_on_error EXIT
 
 VENV_PY=".venv/bin/python"
 if [ ! -x "$VENV_PY" ]; then

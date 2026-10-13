@@ -1,5 +1,6 @@
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -179,6 +180,138 @@ class CloudPreviewTest(unittest.TestCase):
             self.assertEqual(result.completed, 1)
             self.assertEqual(uploader.calls[0][0], relocated.resolve())
             self.assertEqual(updated["preview_path"], str(relocated.resolve()))
+
+    def test_parallel_uploads_are_bounded_and_persisted_in_one_batch(self):
+        barrier = threading.Barrier(2)
+        lock = threading.Lock()
+        active = peak = 0
+
+        class ConcurrentUploader(FakeUploader):
+            def upload_preview(self, preview_path, storage_key):
+                nonlocal active, peak
+                with lock:
+                    active += 1
+                    peak = max(peak, active)
+                try:
+                    barrier.wait(timeout=5)
+                    return super().upload_preview(preview_path, storage_key)
+                finally:
+                    with lock:
+                        active -= 1
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            patches = self.catalog_files(root)
+            with patches[0], patches[1], patches[2], patches[3]:
+                source, preview_dir = self.prepare(root, ("100", "200", "300", "400"))
+                coordinator = threading.get_ident()
+                writers = []
+
+                def persist(path, records):
+                    writers.append(threading.get_ident())
+                    return sync_records(path, records)
+
+                with patch("meury_app.cloud_preview.sync_records", side_effect=persist) as write:
+                    result = upload_pending_previews(
+                        source, uploader=ConcurrentUploader(), preview_dir=preview_dir,
+                        max_workers=2,
+                    )
+                self.assertEqual(result.completed, 4)
+                self.assertEqual(result.failed, 0)
+                self.assertEqual(peak, 2)
+                self.assertEqual(write.call_count, 1)
+                self.assertEqual(writers, [coordinator])
+                self.assertTrue(all(r["cloud_status"] == "completed"
+                                    for r in load_index_payload(source)["records"]))
+
+    def test_pause_drains_and_persists_before_resuming(self):
+        pause = threading.Event()
+        pause.set()
+        persisted = threading.Event()
+        finished = threading.Event()
+        errors = []
+
+        class PausingUploader(FakeUploader):
+            def upload_preview(self, preview_path, storage_key):
+                pause.clear()
+                return super().upload_preview(preview_path, storage_key)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            patches = self.catalog_files(root)
+            with patches[0], patches[1], patches[2], patches[3]:
+                source, preview_dir = self.prepare(root, ("100", "200"))
+                uploader = PausingUploader()
+
+                def persist(path, records):
+                    sync_records(path, records)
+                    persisted.set()
+
+                def run():
+                    try:
+                        upload_pending_previews(source, uploader=uploader,
+                                                preview_dir=preview_dir, max_workers=1,
+                                                pause_event=pause)
+                    except Exception as exc:
+                        errors.append(exc)
+                    finally:
+                        finished.set()
+
+                with patch("meury_app.cloud_preview.sync_records", side_effect=persist):
+                    thread = threading.Thread(target=run, daemon=True)
+                    thread.start()
+                    try:
+                        self.assertTrue(persisted.wait(5))
+                        self.assertEqual(len(uploader.calls), 1)
+                        self.assertFalse(finished.is_set())
+                        records = load_index_payload(source)["records"]
+                        self.assertEqual(sum(r["cloud_status"] == "completed" for r in records), 1)
+                    finally:
+                        pause.set()
+                        thread.join(5)
+                    self.assertFalse(thread.is_alive())
+                    self.assertEqual(errors, [])
+                    self.assertEqual(len(uploader.calls), 2)
+
+    def test_limit_and_asset_scope_preserve_selected_records(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            patches = self.catalog_files(root)
+            with patches[0], patches[1], patches[2], patches[3]:
+                source, preview_dir = self.prepare(root, ("100", "200", "300"))
+                records = load_index_payload(source)["records"]
+                allowed = {r["asset_id"] for r in records if r["codigo"] != "100"}
+                uploader = FakeUploader()
+                result = upload_pending_previews(
+                    source, uploader=uploader, preview_dir=preview_dir,
+                    allowed_asset_ids=allowed, limit=1, max_workers=2,
+                )
+                self.assertEqual(result.pending, 1)
+                self.assertEqual(result.completed, 1)
+                self.assertEqual(len(uploader.calls), 1)
+                records = load_index_payload(source)["records"]
+                untouched = next(r for r in records if r["codigo"] == "100")
+                self.assertEqual(untouched["cloud_status"], "pending")
+                self.assertEqual(sum(r["cloud_status"] == "completed" for r in records), 1)
+
+    def test_configuration_failure_stops_without_marking_records_failed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            patches = self.catalog_files(root)
+            with patches[0], patches[1], patches[2], patches[3]:
+                source, preview_dir = self.prepare(root)
+                with patch("meury_app.cloud_preview.preview_uploader_from_environment",
+                           side_effect=ValueError("configuração incompleta")):
+                    with self.assertRaisesRegex(ValueError, "configuração incompleta"):
+                        upload_pending_previews(source, preview_dir=preview_dir)
+                record = load_index_payload(source)["records"][0]
+                self.assertEqual(record["cloud_status"], "pending")
+                self.assertEqual(record["cloud_attempts"], 0)
+
+    def test_worker_count_validation(self):
+        for workers in (0, 9):
+            with self.subTest(workers=workers), self.assertRaises(ValueError):
+                upload_pending_previews([], max_workers=workers)
 
     def test_storage_key_sanitizes_segments(self):
         key = preview_storage_key(

@@ -135,18 +135,19 @@ dependências opcionais de `requirements-visual.txt`.
 
 ## Inicialização e recursos opcionais
 
-Para abrir sem uma janela de terminal:
+Para abrir o aplicativo:
 
 - no Windows, dê duplo clique em `executar_windows.vbs`;
-- no macOS, dê duplo clique em `executar_macos.command` na primeira vez. Ele
-  cria e abre `Organizador de Estampas.app`; nas próximas vezes, abra o
-  aplicativo `.app` diretamente.
+- no macOS, dê duplo clique em `executar_macos.command`. A inicialização usa
+  o Terminal para permitir a solicitação de acesso à pasta Documentos pelo
+  macOS. Autorize o acesso quando solicitado. Para criar um atalho `.app`,
+  execute `bash criar_app_macos.command`; o atalho também abre pelo Terminal.
 
 Os lançadores trabalham sempre na pasta do projeto, criam a `.venv` quando
 necessário e instalam novamente as dependências básicas somente quando
 `requirements.txt` mudar ou algum pacote estiver ausente. O Windows registra a
-saída em `executar_windows.log`; no macOS, o log fica em
-`~/Library/Logs/OrganizadorEstampas.log`. O `.bat` e o `.command` continuam
+saída em `executar_windows.log`; no macOS, a saída aparece no Terminal.
+O `.bat` e o `.command` continuam
 disponíveis para diagnóstico.
 
 A análise de imagens, a busca semântica e a busca de semelhantes usam a API OpenAI.
@@ -570,3 +571,11 @@ manual. As duplicidades não interrompem a criação do índice.
 
 Atualize o índice quando adicionar, remover ou renomear estampas. Após instalar esta
 versão, o índice antigo será desconsiderado e deverá ser atualizado uma vez.
+
+O envio de previews para Cloud usa 4 workers por padrão. Configure
+`MEURY_CLOUD_WORKERS=1` para envio sequencial ou um valor de 1 a 8 para ajustar
+a concorrência. A fila mantém no máximo esse número de tarefas; clientes Cloud
+são próprios por thread e o SQLite é atualizado apenas pelo coordenador, em
+lotes de até 50 resultados ou a cada 1 segundo. Ao pausar, os envios em andamento
+terminam e seus resultados são persistidos antes da espera. Em uma interrupção
+abrupta, resultados ainda não persistidos poderão ser reenviados na retomada.

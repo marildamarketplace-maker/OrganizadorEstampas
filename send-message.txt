@@ -1,0 +1,24 @@
+No job `processar-estampas`, a estampa entra automaticamente na fila de IA quando atende **todos estes critérios**:
+
+1. Está com `processing_status = PENDING`.
+2. Possui `content_hash` preenchido.
+3. O `content_hash` é diferente do `ai_processed_hash` — ainda não foi analisada ou o arquivo mudou.
+4. Possui `preview_url` válida e permitida pelas regras de segurança.
+5. O nome do arquivo não corresponde aos **termos ignorados configurados no job**.
+6. Não possui job ativo (`PENDING`/`PROCESSING`) nem job `FAILED`. Um job `COMPLETED` pode ser reaberto se o conteúdo mudou.
+
+**O filtro de nome**, quando configurado com `-`, `.`, `MOCKUP` e `MOCLKUP`, funciona assim:
+
+| Nome | Resultado |
+|---|---|
+| `6245-A.jpg` | Permitido: hífen entre código e variante |
+| `6245-.jpg` | Ignorado: hífen no final |
+| `6245.v2.jpg` | Ignorado: ponto no nome sem extensão |
+| `6245-MOCKUP.jpg` | Ignorado |
+| `6245-MOCLKUP.jpg` | Ignorado |
+
+A comparação ignora maiúsculas/minúsculas, diretórios e a extensão. **Os termos efetivos vêm da configuração no banco**; não confirmei quais estão salvos atualmente.
+
+Para executar, o job precisa estar despausado. A fila seleciona apenas jobs com tentativas disponíveis e prazo de retry vencido. **Não há filtro por tema, cor ou categoria nessa seleção.**
+
+Conferido no [detector de pendências](/Users/marcotulio/Documents/www/sistema-producao-olist/src/services/detectarEstampasPendentesService.ts:41) e no [filtro de nomes](/Users/marcotulio/Documents/www/sistema-producao-olist/src/domain/filtro-nome-arquivo-estampa.ts:8).

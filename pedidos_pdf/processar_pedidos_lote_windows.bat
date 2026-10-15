@@ -4,7 +4,6 @@ chcp 65001 >nul
 title Processamento de pedidos em lote
 set "RESULTADO=1"
 set "PODE_ABRIR_RELATORIO=0"
-set "TRAVA_ADQUIRIDA=0"
 
 rem Versao para Windows do processador de pedidos em lote.
 for %%I in ("%~dp0..") do set "RAIZ_PROJETO=%%~fI"
@@ -18,6 +17,7 @@ set "RELATORIOS=%RAIZ_PROJETO%\pedidos_pdf\relatorios"
 set "CONTROLE=%RAIZ_PROJETO%\pedidos_pdf\.controle"
 set "TRAVA=%CONTROLE%\em_execucao"
 set "PROCESSADOR=%RAIZ_PROJETO%\meury_app\batch_order_processor.py"
+set "INICIALIZADOR=%RAIZ_PROJETO%\scripts\run_order_batch_windows.ps1"
 set "ESQUEMA=%RAIZ_PROJETO%\meury_app\batch_order_report.schema.json"
 
 if exist "%RAIZ_PROJETO%\.venv\Scripts\python.exe" (
@@ -42,6 +42,10 @@ if not exist "%PROCESSADOR%" (
     echo ERRO: Processador nao encontrado: "%PROCESSADOR%"
     goto FINALIZAR
 )
+if not exist "%INICIALIZADOR%" (
+    echo ERRO: Inicializador nao encontrado: "%INICIALIZADOR%"
+    goto FINALIZAR
+)
 if not exist "%ESQUEMA%" (
     echo ERRO: Esquema de relatorio nao encontrado: "%ESQUEMA%"
     goto FINALIZAR
@@ -61,23 +65,19 @@ if not exist "%CAIXA_ENTRADA%" mkdir "%CAIXA_ENTRADA%"
 if not exist "%RELATORIOS%" mkdir "%RELATORIOS%"
 if not exist "%CONTROLE%" mkdir "%CONTROLE%"
 
-mkdir "%TRAVA%" 2>nul
-if errorlevel 1 (
-    echo Ja existe um processamento em lote em andamento.
-    goto FINALIZAR
-)
-set "TRAVA_ADQUIRIDA=1"
-
 echo Caixa de entrada: %CAIXA_ENTRADA%
-echo Iniciando atualizacao diaria do indice e processamento dos PDFs novos...
+echo Iniciando o lote. Escolha se deseja atualizar o indice antes de separar as imagens.
 
-"%PYTHON_BIN%" "%PROCESSADOR%" --projeto "%RAIZ_PROJETO%" --codex "%CODEX_BIN%"
+set "REINICIAR="
+if /i "%~1"=="--reiniciar" set "REINICIAR=-Reiniciar"
+rem O inicializador verifica a TRAVA e somente processos de --projeto deste lote.
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%INICIALIZADOR%" -ProjectRoot "%RAIZ_PROJETO%" -PythonBin "%PYTHON_BIN%" -ProcessorPath "%PROCESSADOR%" -CodexBin "%CODEX_BIN%" %REINICIAR%
 set "RESULTADO=%ERRORLEVEL%"
 
+if "%RESULTADO%"=="2" goto FINALIZAR
 set "PODE_ABRIR_RELATORIO=1"
 
 :FINALIZAR
-if "%TRAVA_ADQUIRIDA%"=="1" rmdir "%TRAVA%" 2>nul
 echo.
 if "%PODE_ABRIR_RELATORIO%"=="1" (
     set "ULTIMO_RELATORIO="

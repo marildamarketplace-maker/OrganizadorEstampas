@@ -32,7 +32,7 @@ else
 fi
 
 echo "Caixa de entrada: $CAIXA_ENTRADA"
-echo "Iniciando atualizacao diaria do indice e processamento dos PDFs novos..."
+echo "Iniciando o lote. Escolha se deseja atualizar o indice antes de separar as imagens."
 
 "$PYTHON_BIN" "$RAIZ_PROJETO/meury_app/batch_order_processor.py" \
   --projeto "$RAIZ_PROJETO" \

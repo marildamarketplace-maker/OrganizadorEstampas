@@ -408,14 +408,30 @@ obrigatórios.
    `pedidos_pdf\processar_pedidos_lote_windows.bat` no Windows.
 3. Consulte a pasta mais recente em `pedidos_pdf/relatorios`.
 
-Antes dos PDFs, o lançador verifica se **Atualizar índice** já terminou com sucesso
+No Windows, uma trava deixada por uma janela encerrada é liberada automaticamente
+quando não há lote ativo. Se outro lote deste projeto estiver rodando, o inicializador
+pergunta se deseja encerrá-lo e reiniciar. Responda `S` para encerrar também os processos
+filhos do lote e começar novamente, ou `N` para manter a execução anterior. Para reiniciar
+diretamente, use `pedidos_pdf\processar_pedidos_lote_windows.bat --reiniciar`.
+Pedidos já concluídos continuam reconhecidos pelo histórico; os pendentes são retomados.
+
+Antes dos PDFs, o lote pergunta se deseja sincronizar/atualizar o índice. Responda
+`N` para carregar o índice já salvo e seguir direto para a separação das imagens,
+sem varrer as pastas de estampas. Caso ainda não exista um índice salvo compatível,
+o lote informa que é necessário executá-lo novamente e responder `S`.
+
+Respondendo `S`, o lote verifica se **Atualizar índice** já terminou com sucesso
 no dia atual para as mesmas pastas configuradas. Se ainda não terminou, executa o
-scan local automaticamente e mostra o progresso no terminal. Uma atualização feita
-pelo botão do aplicativo também conta; o marcador só é gravado após a conclusão.
+scan local e mostra o progresso no terminal. Uma atualização feita pelo botão do
+aplicativo também conta; o marcador só é gravado após a conclusão. Para executar o
+processador Python sem a pergunta, use `--sem-atualizar-indice` ou `--atualizar-indice`.
 
 Cada PDF novo recebe uma execução isolada do prompt. O controle usa o conteúdo do
 arquivo, e não apenas o nome: um PDF concluído continua sendo reconhecido se for
 renomeado. Os relatórios do lote separam sucessos, falhas e arquivos já processados.
+O `LOG_FINAL_ACAO_HUMANA.txt` traz um resumo curto: por PDF, lista as estampas a
+localizar e as duplicidades a resolver, seguido da orientação para executar novamente.
+Os detalhes técnicos ficam nos arquivos individuais `.json` e `.log`.
 O arquivo `historico_processados.csv` lista todos os pedidos concluídos até o momento.
 Qualquer pendência é classificada como falha. Falhas ficam no histórico e são tentadas
 novamente na execução seguinte.

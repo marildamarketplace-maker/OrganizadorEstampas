@@ -14,8 +14,11 @@ import threading
 import time
 
 from .asset_identity import relative_asset_identity
+from .cloud_preview import needs_cloud_upload
+from .filename_filter import is_ignored_filename
 from .indexer import _operational_db_path, load_catalog_records
 from .operational_store import sync_records
+from .preview_generator import needs_preview_generation
 from .retry_policy import RetryFailure, is_retryable_external_error, run_with_retry
 
 
@@ -107,6 +110,17 @@ class SupabaseSyncResult:
     completed: int
     failed: int
     elapsed_seconds: float
+    remaining: int = 0
+
+
+def needs_supabase_sync(record: dict) -> bool:
+    return (
+        record.get("supabase_status") in {"pending", "failed"}
+        or (
+            record.get("supabase_status") in {"completed", "synced"}
+            and record.get("supabase_content_hash") != record.get("content_hash")
+        )
+    )
 
 
 def _payload(record: dict) -> dict:
@@ -136,6 +150,7 @@ def sync_pending_records(
     progress_callback: Callable[[int, int, str], None] | None = None,
     pause_event: threading.Event | None = None,
     allowed_asset_ids: set[str] | None = None,
+    ignored_filename_terms=None,
 ) -> SupabaseSyncResult:
     if batch_size < 1 or batch_size > 500:
         raise ValueError("batch_size deve estar entre 1 e 500 registros.")
@@ -151,17 +166,12 @@ def sync_pending_records(
         and bool(record.get("preview_url"))
         and bool(record.get("storage_key"))
         and bool(record.get("content_hash"))
+        and not is_ignored_filename(record, ignored_filename_terms)
         and (
             allowed_asset_ids is None
             or str(record.get("asset_id", "")) in allowed_asset_ids
         )
-        and (
-            record.get("supabase_status") in {"pending", "failed"}
-            or (
-                record.get("supabase_status") in {"completed", "synced"}
-                and record.get("supabase_content_hash") != record.get("content_hash")
-            )
-        )
+        and needs_supabase_sync(record)
     ]
     if limit is not None:
         pending = pending[:limit]
@@ -232,7 +242,19 @@ def sync_pending_records(
                 processed, len(pending),
                 f"Sincronizando Supabase: {processed:,} de {len(pending):,}",
             )
+    remaining = sum(
+        1 for record in records
+        if record.get("active", True)
+        and not record.get("missing_locally", False)
+        and not is_ignored_filename(record, ignored_filename_terms)
+        and (
+            needs_preview_generation(record)
+            or needs_cloud_upload(record)
+            or needs_supabase_sync(record)
+        )
+    )
     return SupabaseSyncResult(
         pending=len(pending), completed=completed, failed=failed,
         elapsed_seconds=time.monotonic() - started,
+        remaining=remaining,
     )

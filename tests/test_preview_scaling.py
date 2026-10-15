@@ -11,7 +11,12 @@ from meury_app.preview_progress import PreviewProgress
 
 def records(count):
     return [
-        {"asset_id": str(number), "preview_status": "pending", "path": f"{number}.jpg"}
+        {
+            "asset_id": str(number),
+            "preview_status": "pending",
+            "path": f"{number}.jpg",
+            "content_hash": f"{number:064x}",
+        }
         for number in range(count)
     ]
 
@@ -100,6 +105,7 @@ class PreviewScalingTest(unittest.TestCase):
     def test_limit_allowed_assets_and_failures_are_counted_separately(self):
         items = records(8)
         items[0]["preview_status"] = "completed"
+        items[0]["preview_content_hash"] = items[0]["content_hash"]
         items[1]["active"] = False
         items[2]["missing_locally"] = True
         callback = Mock()
@@ -119,10 +125,45 @@ class PreviewScalingTest(unittest.TestCase):
         self.assertIn("4.jpg", errors.output[0])
         self.assertIn("arquivo corrompido", errors.output[0])
         self.assertEqual((result.pending, result.completed, result.failed), (2, 1, 1))
+        self.assertEqual(result.remaining, 4)
         self.assertEqual({call.args[0]["asset_id"] for call in generate.call_args_list}, {"3", "4"})
         self.assertEqual(callback.call_args.args[:2], (2, 2))
         self.assertIn("Prontos no catálogo: 2", callback.call_args.args[2])
         self.assertIn("falhas: 1", callback.call_args.args[2])
+
+    def test_remaining_counts_all_eligible_files_after_a_limited_batch(self):
+        items = records(7)
+        for item in items:
+            item["filename"] = item["path"]
+        items[1]["preview_status"] = "failed"
+        items[2]["filename"] = "6245-B..jpg"
+        items[3]["missing_locally"] = True
+        items[4]["active"] = False
+        items[5]["filename"] = "900-MOCLKUP.jpg"
+        with patch("meury_app.preview_generator.load_catalog_records", return_value=items), patch(
+            "meury_app.preview_generator.create_preview", return_value=Path("preview.webp")
+        ), patch("meury_app.preview_generator.sync_records"), redirect_stdout(io.StringIO()):
+            result = generate_pending_previews(
+                [], allowed_asset_ids={"0"}, limit=1,
+                ignored_filename_terms="-, ., MOCKUP, MOCLKUP",
+            )
+        self.assertEqual((result.pending, result.completed, result.failed), (1, 1, 0))
+        self.assertEqual(result.remaining, 2)
+
+    def test_stale_completed_preview_is_regenerated_and_not_counted_as_ready(self):
+        items = records(2)
+        items[0].update(preview_status="completed", preview_content_hash="f" * 64)
+        items[1].update(
+            preview_status="completed", preview_content_hash=items[1]["content_hash"]
+        )
+        callback = Mock()
+        with patch("meury_app.preview_generator.load_catalog_records", return_value=items), patch(
+            "meury_app.preview_generator.create_preview", return_value=Path("preview.webp")
+        ) as generate, patch("meury_app.preview_generator.sync_records"), redirect_stdout(io.StringIO()):
+            result = generate_pending_previews([], progress_callback=callback)
+        self.assertEqual((result.pending, result.completed, result.remaining), (1, 1, 0))
+        self.assertEqual(generate.call_args.args[0]["asset_id"], "0")
+        self.assertIn("Prontos no catálogo: 2", callback.call_args.args[2])
 
     def test_empty_batch_does_not_wait_on_pause(self):
         pause = Mock()

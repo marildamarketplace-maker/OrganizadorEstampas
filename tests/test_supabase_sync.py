@@ -6,6 +6,7 @@ from urllib.error import HTTPError
 from unittest.mock import patch
 
 from meury_app import indexer
+from meury_app.cloud_preview import preview_storage_key
 from meury_app.retry_policy import is_retryable_external_error
 from meury_app.supabase_sync import (
     SupabaseConfig, SupabaseHttpError, SupabaseRestClient, _payload,
@@ -153,6 +154,45 @@ class SupabaseSyncTest(unittest.TestCase):
             second = sync_pending_records([Path("/tmp")], client=retry_client)
         self.assertEqual((second.pending, second.completed, second.failed), (1, 1, 0))
         self.assertEqual(records[1]["supabase_status"], "completed")
+
+    def test_remaining_counts_failures_stale_and_blocked_files_outside_batch(self):
+        items = []
+        for number in range(9):
+            record = self.record(f"/tmp/{number}-A.jpg")
+            record.update(
+                asset_id=f"asset-{number}", codigo=str(number),
+                filename=f"{number}-A.jpg", relative_path=f"{number}/{number}-A.jpg",
+                content_hash="a" * 64, preview_path="preview.webp",
+                preview_status="completed", preview_content_hash="a" * 64,
+                cloud_content_hash="a" * 64, supabase_content_hash="a" * 64,
+            )
+            record["storage_key"] = preview_storage_key(record, Path("preview.webp"))
+            items.append(record)
+        items[3].update(supabase_status="completed", supabase_content_hash="b" * 64)
+        items[4].update(supabase_status="completed", cloud_status="failed")
+        items[5].update(supabase_status="completed", preview_status="pending")
+        items[6]["filename"] = "900-MOCKUP.jpg"
+        items[7]["active"] = False
+        items[8]["missing_locally"] = True
+
+        class SelectiveClient(FakeClient):
+            def upsert(self, rows):
+                self.calls.append(rows)
+                if any(row["codigo"] == "1" for row in rows):
+                    raise ValueError("registro inválido")
+                self.rows.extend(rows)
+
+        client = SelectiveClient()
+        with patch("meury_app.supabase_sync.load_catalog_records", return_value=items), patch(
+            "meury_app.supabase_sync.sync_records"
+        ):
+            result = sync_pending_records(
+                [], client=client, limit=2, allowed_asset_ids={"asset-0", "asset-1"},
+                ignored_filename_terms="-, ., MOCKUP, MOCLKUP",
+            )
+        self.assertEqual((result.pending, result.completed, result.failed), (2, 1, 1))
+        self.assertEqual(result.remaining, 5)
+        self.assertEqual([row["codigo"] for row in client.rows], ["0"])
 
     def test_rest_error_preserves_database_message_and_marks_sql_as_permanent(self):
         body = BytesIO(b'{"code":"21000","message":"row affected a second time"}')

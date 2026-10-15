@@ -199,7 +199,8 @@ def _state_metadata(
     return {
         "codigo": design_id,
         "variante": variant_from_filename(design_id, filename) if design_id else "",
-        # Reservado para uma etapa futura de hashing; vazio significa "não calculado".
+        # Preenchido ao validar arquivos novos/alterados ou antes de gerar preview.
+        # Vazio significa apenas que o registro ainda não passou por uma dessas etapas.
         "content_hash": "",
         "indexed": True,
         "changed": False,
@@ -266,6 +267,14 @@ def calculate_content_hash(path: Path, block_size: int = 1024 * 1024) -> str:
             count("hash_bytes_read", len(block))
     count("hash_files")
     return digest.hexdigest()
+
+
+def valid_content_hash(value: object) -> bool:
+    content_hash = str(value or "").strip()
+    return (
+        len(content_hash) == 64
+        and all(character in "0123456789abcdefABCDEF" for character in content_hash)
+    )
 
 
 def _copy_metadata(previous: dict, current: dict) -> None:
@@ -820,9 +829,15 @@ def _scan_and_merge(
                 old.get("missing_locally", False) or not old.get("active", True)
             ))
             current_signature = (stat_result.st_size, stat_result.st_mtime_ns)
-            if old is not None and _signature(old) == current_signature:
+            if (
+                old is not None
+                and _signature(old) == current_signature
+                and valid_content_hash(old.get("content_hash"))
+            ):
                 # Fast path: não cria outro registro nem toca em hash, preview ou
-                # estados de sincronização quando caminho, tamanho e mtime coincidem.
+                # estados de sincronização quando caminho, tamanho, mtime e hash
+                # coincidem. Registros legados sem hash passam pela verificação
+                # completa uma vez para não permanecerem incompletos.
                 old["path"] = absolute_path
                 old["active"] = True
                 old["missing_locally"] = False

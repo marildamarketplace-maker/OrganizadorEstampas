@@ -11,6 +11,7 @@ import os
 import shutil
 import subprocess
 import sys
+import textwrap
 import time
 from datetime import datetime
 from functools import lru_cache
@@ -21,13 +22,14 @@ if __package__ in {None, ""}:  # Compatibilidade com execução direta deste arq
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from meury_app.config import load_config
+from meury_app import indexer
 from meury_app.daily_index import ensure_daily_index, prepare_daily_index
 from meury_app.environment import load_local_environment
 from meury_app.processor import create_order_response
 
 
 FINAL_SUCCESS = {"SUCESSO"}
-EXTRACTION_VERSION = 1
+EXTRACTION_VERSION = 2
 DEFAULT_OPENAI_ORDER_MODEL = "gpt-4o-mini"
 DEFAULT_CODEX_ORDER_MODEL = "gpt-6-astra"
 DEFAULT_CODEX_ORDER_MODEL_FALLBACKS = (
@@ -51,7 +53,38 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Caminho do Codex CLI; se indisponível, usa a API OpenAI como fallback.",
     )
+    index_options = parser.add_mutually_exclusive_group()
+    index_options.add_argument(
+        "--atualizar-indice", dest="atualizar_indice", action="store_true",
+        help="Autoriza a verificação/atualização diária do índice sem perguntar.",
+    )
+    index_options.add_argument(
+        "--sem-atualizar-indice", dest="atualizar_indice", action="store_false",
+        help="Usa somente o índice salvo, sem varrer as pastas de estampas.",
+    )
+    parser.set_defaults(atualizar_indice=None)
     return parser.parse_args()
+
+
+def choose_index_update(value: bool | None) -> bool:
+    """Pergunta uma vez por lote; flags explícitas permitem uso não interativo."""
+    if value is not None:
+        return value
+    while True:
+        try:
+            answer = input(
+                "Deseja sincronizar/atualizar o índice antes de separar as imagens? [S/N]: "
+            ).strip().casefold()
+        except EOFError as exc:
+            raise ValueError(
+                "Não foi possível ler a escolha do índice. Execute com "
+                "--atualizar-indice ou --sem-atualizar-indice."
+            ) from exc
+        if answer in {"s", "sim"}:
+            return True
+        if answer in {"n", "nao", "não"}:
+            return False
+        print("Responda S para atualizar ou N para usar o índice salvo.", flush=True)
 
 
 def positive_timeout(environment_name: str, default: int) -> int:
@@ -140,9 +173,11 @@ def valid_extraction(value: Any) -> bool:
     products = value.get("produtos")
     if not isinstance(products, list) or not products:
         return False
-    required = ("tecidoCodigo", "tecidoNome", "estampa", "variante")
+    required_values = ("tecidoNome", "estampa", "variante")
     return all(
-        isinstance(product, dict) and all(product.get(key) for key in required)
+        isinstance(product, dict)
+        and isinstance(product.get("tecidoCodigo"), str)
+        and all(product.get(key) for key in required_values)
         for product in products
     )
 
@@ -176,16 +211,36 @@ formato JSON interno:
 }}
 
 Use a data de emissão do pedido, não a data de impressão. Inclua em "produtos" somente
-linhas cuja descrição do produto contenha a palavra isolada "SUBLIME", ignorando letras
-maiúsculas ou minúsculas. Ignore completamente todas as outras linhas: não as exporte
-para o JSON e não gere erro por campos ausentes nelas. Para cada linha SUBLIME,
-preserve corretamente a associação entre tecido, estampa e variante. Extraia a estampa
-da própria linha do produto ou de seu campo associado e preserve prefixos alfanuméricos.
-Por exemplo, "MV23069-A" resulta em estampa "MV23069" e variante "A". Quando a linha
-trouxer somente o número da estampa, sem letra ou sufixo, registre obrigatoriamente a
-variante como "A". Por exemplo, "6162" significa estampa 6162, variante A; "6162 D"
-significa estampa 6162, variante D. Não invente nem complete qualquer outro valor
-ausente.
+as linhas que atendam a pelo menos um destes formatos:
+
+- a descrição contém a palavra isolada "SUBLIME", ignorando maiúsculas e minúsculas;
+- a descrição começa com a palavra "IMPRESSÃO" ou uma variação inequívoca dela, mesmo
+  sem acento, com erro ortográfico ou erro de OCR, como "IMPRESSAO", "IMPRESÃO",
+  "IMPREÇÃO" ou "IMPRECAO". Aceite espaço, barra, hífen ou dois-pontos entre essa
+  palavra e o código da estampa.
+
+Ignore completamente as demais linhas: não as exporte para o JSON e não gere erro por
+campos ausentes nelas. Preserve corretamente a associação entre tecido, estampa e
+variante. Extraia a estampa da própria linha do produto ou de seu campo associado e
+preserve prefixos alfanuméricos. Por exemplo, "MV23069-A" resulta em estampa
+"MV23069" e variante "A". Quando a linha trouxer somente o código da estampa, sem
+letra ou sufixo, registre obrigatoriamente a variante como "A". Por exemplo, "6162"
+significa estampa 6162, variante A; "6162 D" significa estampa 6162, variante D. Não
+invente nem complete qualquer outro valor ausente.
+
+Para linhas de IMPRESSÃO, aplique obrigatoriamente estas regras específicas:
+
+- Desconsidere a palavra inicial IMPRESSÃO e seus erros ortográficos aceitos.
+- O primeiro código alfanumérico depois dela é a estampa. Não use a coluna "Código"
+  da tabela como estampa nem como tecidoCodigo.
+- Um sufixo alfabético separado por hífen no código é a variante. Sem sufixo, use "A".
+- Todo o texto depois do código da estampa é o tecidoNome, preservando nomes compostos.
+- Como esse formato não informa o código do tecido, use uma string vazia em
+  tecidoCodigo. Se não houver texto depois da estampa, use "SEM_TECIDO" em tecidoNome.
+- Exemplo: "IMPRESSÃO MV27951 MICROFIBRA" resulta em tecidoCodigo "",
+  tecidoNome "MICROFIBRA", estampa "MV27951" e variante "A".
+- Exemplo: "IMPRESSÃO/MV24324" resulta em tecidoCodigo "", tecidoNome
+  "SEM_TECIDO", estampa "MV24324" e variante "A".
 
 Em cada linha SUBLIME, diferencie obrigatoriamente os códigos pelos seus papéis:
 
@@ -203,19 +258,22 @@ Em cada linha SUBLIME, diferencie obrigatoriamente os códigos pelos seus papéi
 
 Quando o PDF apresentar uma tabela, use a posição visual das colunas para associar os
 dados que pertencem à mesma linha de produto. A extração de texto pode quebrar uma linha
-visual em várias linhas; nesse caso, associe o código de estampa à descrição SUBLIME que
-estiver alinhada na mesma linha visual. Não trate o número após "Ref." como estampa,
+visual em várias linhas; nesse caso, associe o código de estampa à descrição SUBLIME ou
+IMPRESSÃO que estiver alinhada na mesma linha visual. Não trate o número após "Ref."
+como estampa,
 mesmo se ele aparecer antes da estampa no texto extraído. Por exemplo, para uma linha
 que apresenta "Ref. 7347" e "6761-B" na coluna de estampa, extraia estampa "6761" e
 variante "B".
 
 Para os campos de identificação, use "Cód. Cliente" como clienteCodigo e o valor do
-campo "Cliente" como clienteNome. Nunca use o campo "Empresa" como clienteNome, pois
-ele identifica a empresa emissora do pedido. No tecido, use o código inicial como
-tecidoCodigo e somente o nome comercial principal imediatamente após o código como
-tecidoNome, sem composição, percentuais, referência ou outros complementos. Exemplo:
-"1416 TRICOLINE SUBLIME 90%POL10%ALG Ref. 6855" resulta em tecidoCodigo "1416" e
-tecidoNome "TRICOLINE".
+campo "Cliente" como clienteNome. Quando o documento trouxer os dois dados juntos no
+formato "Cliente: 5376 - CASA PINTO HOME LTDA", extraia "5376" como clienteCodigo e
+"CASA PINTO HOME LTDA" como clienteNome. Nunca use o campo "Empresa" como
+clienteNome, pois ele identifica a empresa emissora do pedido. Em linhas SUBLIME, use
+o código inicial como tecidoCodigo e somente o nome comercial principal imediatamente
+após o código como tecidoNome, sem composição, percentuais, referência ou outros
+complementos. Exemplo: "1416 TRICOLINE SUBLIME 90%POL10%ALG Ref. 6855" resulta em
+tecidoCodigo "1416" e tecidoNome "TRICOLINE".
 
 2. Antes de responder, confirme que todos os campos obrigatórios foram extraídos com
 segurança:
@@ -223,23 +281,26 @@ segurança:
 - Número do pedido
 - Data de emissão
 - Código e nome do cliente
-- Pelo menos uma linha de produto contendo a palavra isolada "SUBLIME"
-- Código e nome do tecido de cada produto SUBLIME incluído
-- Estampa de cada produto SUBLIME incluído
-- Variante de cada produto SUBLIME incluído; use "A" quando o PDF não mostrar letra
-  após a estampa
+- Pelo menos uma linha de produto SUBLIME ou IMPRESSÃO conforme os formatos aceitos
+- Nome do tecido de cada produto; para IMPRESSÃO sem tecido, use "SEM_TECIDO"
+- Código do tecido de cada produto SUBLIME; em IMPRESSÃO, tecidoCodigo deve ser vazio
+- Estampa de cada produto incluído
+- Variante de cada produto incluído; use "A" quando o PDF não mostrar letra após a
+  estampa
 
 Faça também estas verificações obrigatórias:
 
-- Cada produto do JSON corresponde a uma linha do PDF que contém "SUBLIME".
+- Cada produto do JSON corresponde a uma linha SUBLIME ou IMPRESSÃO aceita.
 - Não use o número do pedido, a data, o código do cliente ou o nome do cliente como
   tecidoCodigo, tecidoNome ou estampa.
 - A estampa não pode ser igual ao número do pedido.
 - Não reutilize um mesmo valor para todos os campos apenas porque o PDF não foi lido.
-- Inclua todas as linhas SUBLIME encontradas no PDF.
+- Inclua todas as linhas SUBLIME e IMPRESSÃO aceitas encontradas no PDF.
 
 Se qualquer campo obrigatório estiver vazio, ilegível ou ambíguo, não invente valores.
-Em vez disso, interrompa a extração sem produzir um JSON preenchido com suposições.
+A única exceção é tecidoCodigo nas linhas de IMPRESSÃO, que deve ser uma string vazia
+por definição. Nos demais casos, interrompa a extração sem produzir um JSON preenchido
+com suposições.
 
 3. Ao terminar, responda somente com o JSON extraído no formato definido acima e pelo
 esquema de saída. A etapa seguinte do processador cuidará da criação do pedido.
@@ -577,7 +638,7 @@ def extract_with_fallback(
         ) from api_exc
 
 
-def load_order_context() -> tuple[Path, dict[str, list[str]]]:
+def load_order_context(*, update_index: bool = True) -> tuple[Path, dict[str, list[str]]]:
     """Prepara e preserva uma única instância do índice para todo o lote."""
     config = load_config()
     output_value = config.get("output_dir")
@@ -585,8 +646,24 @@ def load_order_context() -> tuple[Path, dict[str, list[str]]]:
         raise ValueError("Nenhuma pasta de saída foi salva no aplicativo.")
 
     started = time.monotonic()
-    index, _sources, updated = prepare_daily_index()
-    action = "atualizado e reaproveitado" if updated else "carregado uma única vez"
+    if update_index:
+        index, _sources, updated = prepare_daily_index()
+        action = "atualizado e reaproveitado" if updated else "carregado uma única vez"
+    else:
+        sources = [
+            Path(value) for value in config.get("source_dirs", []) if str(value).strip()
+        ]
+        if not sources:
+            raise ValueError("Nenhuma pasta de estampas foi configurada no aplicativo.")
+        print("[indice] Carregando o índice salvo, sem varrer as pastas de estampas...", flush=True)
+        payload = indexer.load_index_payload(sources)
+        if payload is None:
+            raise ValueError(
+                "Não há índice salvo compatível disponível. Execute novamente e responda "
+                "S para atualizar o índice antes de separar as imagens."
+            )
+        index = payload["index"]
+        action = "salvo carregado, sem atualização"
     print(
         f"  Índice {action}: {len(index):,} chaves em "
         f"{time.monotonic() - started:.2f}s.",
@@ -726,80 +803,116 @@ def write_final_action_log(
     run_dir: Path,
     generated_at: str,
 ) -> str:
-    """Grava o resumo definitivo do lote, priorizando as ações humanas pendentes."""
-    pending = [row for row in rows if row.get("validacoes")]
-    clear = [row for row in rows if not row.get("validacoes")]
-    successes = sum(row.get("resultado") == "SUCESSO" for row in rows)
-    failures = sum(row.get("resultado") == "FALHA" for row in rows)
-    skipped = sum(row.get("resultado") == "JÁ PROCESSADO" for row in rows)
-    overall = (
-        "AÇÃO HUMANA NECESSÁRIA"
-        if pending
-        else "LOTE CONCLUÍDO SEM PENDÊNCIAS DE VALIDAÇÃO"
-    )
+    """Grava uma lista curta de tarefas; os detalhes permanecem nos logs individuais."""
+    pending = [row for row in rows if row.get("validacoes") or row.get("resultado") == "FALHA"]
+    clear = [row for row in rows if not row.get("validacoes") and row.get("resultado") != "FALHA"]
+
+    def wrapped(message: str) -> str:
+        return textwrap.fill(
+            message, width=100, subsequent_indent="    ",
+            break_long_words=False, break_on_hyphens=False,
+        )
+
+    def design_name(value: str) -> str:
+        # O processador também busca o arquivo sem '-A'. É uma única variante,
+        # não uma segunda estampa que a pessoa precise conferir.
+        try:
+            data = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            data = None
+        if isinstance(data, dict) and data.get("estampa"):
+            value = _human_value(data["estampa"])
+        alternatives = value.split(" ou ")
+        if len(alternatives) == 2:
+            first, second = alternatives
+            if first == second + "-A":
+                return first
+            if second == first + "-A":
+                return second
+        return value
+
+    def list_action(label: str, values: list[str]) -> None:
+        if values:
+            unique = list(dict.fromkeys(values))
+            lines.append(wrapped(f"  - {label}: {', '.join(unique)}."))
 
     lines = [
-        "=" * 78,
-        "LOG FINAL DO PROCESSAMENTO DE PDFs — ORIENTADO À AÇÃO HUMANA",
-        "=" * 78,
-        f"STATUS GERAL: {overall}",
-        f"Gerado em: {generated_at}",
-        f"Pasta dos relatórios: {_human_value(run_dir)}",
-        "",
-        "Este é o LOG FINAL desta execução. Use a seção 'AÇÃO HUMANA NECESSÁRIA'",
-        "como lista de trabalho; os logs individuais servem apenas para investigação.",
-        "",
-        "RESUMO DO LOTE",
-        f"- PDFs considerados: {len(rows)}",
-        f"- Processados com sucesso: {successes}",
-        f"- Falhas: {failures}",
-        f"- Já processados anteriormente: {skipped}",
-        f"- PDFs que exigem ação humana: {len(pending)}",
-        f"- PDFs sem pendência: {len(clear)}",
-        "",
-        "1. AÇÃO HUMANA NECESSÁRIA",
+        "RESUMO DOS PEDIDOS",
+        f"PDFs: {len(rows)} | Com pendências: {len(pending)} | Sem pendências: {len(clear)}",
     ]
+    if pending:
+        lines.extend(["", "O QUE PRECISA SER FEITO"])
+    else:
+        lines.extend(["", "Tudo certo. Nenhuma ação necessária."])
 
-    if not pending:
-        lines.append("- Nenhuma validação ou correção humana foi identificada.")
-    for position, row in enumerate(pending, start=1):
-        lines.extend(
-            [
-                "",
-                "[{}] PDF: {}".format(
-                    position, _human_value(row.get("arquivo") or "(não informado)")
-                ),
-                "    Pedido: "
-                f"{_human_value(row.get('pedido') or '(não identificado)')}",
-                "    Resultado técnico: "
-                f"{_human_value(row.get('resultado') or '(não informado)')}",
-                "    Por que precisa de validação:",
+    for row in pending:
+        filename = _human_value(row.get("arquivo") or "PDF não informado")
+        order = _human_value(row.get("pedido") or "")
+        label = filename
+        if order and Path(filename).stem != order:
+            label = f"Pedido {order} ({filename})"
+        lines.extend(["", label])
+        missing, duplicates, errors, other = [], [], [], []
+        move_errors = []
+        for value in row.get("validacoes") or []:
+            reason = _human_value(value)
+            if reason.startswith("Estampa não encontrada: "):
+                missing.append(design_name(reason.removeprefix("Estampa não encontrada: ")))
+            elif reason.startswith("Estampa com mais de um arquivo candidato: "):
+                duplicates.append(design_name(reason.removeprefix(
+                    "Estampa com mais de um arquivo candidato: "
+                )))
+            elif reason.startswith("Erro de processamento: "):
+                errors.append(reason.removeprefix("Erro de processamento: "))
+            elif reason.startswith("PDF não foi movido para concluído:"):
+                move_errors.append(reason.removeprefix("PDF não foi movido para concluído:").strip())
+            else:
+                other.append(reason)
+        list_action("Localizar estampas", missing)
+        list_action("Escolher o arquivo correto", duplicates)
+        list_action("Corrigir o erro", errors)
+        if move_errors:
+            lines.append("  - Mover o PDF para a pasta entrada/concluido; o pedido já foi separado.")
+            lines.append(wrapped(f"    Motivo: {', '.join(move_errors)}."))
+        for reason in other:
+            lines.append(wrapped(f"  - Conferir: {reason}"))
+
+        # Não repete instruções técnicas já traduzidas nas ações acima.
+        for action in row.get("acoes") or []:
+            text = _human_value(action)
+            if (
+                (missing and text.startswith("Conferir os códigos/variantes no PDF"))
+                or (duplicates and text.startswith("Escolher o arquivo correto de cada estampa duplicada"))
+                or (errors and text.startswith("Corrigir o erro informado,"))
+                or (move_errors and text.startswith("Mover manualmente o PDF"))
+            ):
+                continue
+            lines.append(wrapped(f"  - {text}"))
+        if errors or other or not row.get("validacoes"):
+            detail_files = [
+                _human_value(str(row[key]).replace("\\", "/").rsplit("/", 1)[-1])
+                for key in ("logIndividual", "relatorioJson") if row.get(key)
             ]
-        )
-        lines.extend(
-            f"      - {_human_value(reason)}"
-            for reason in row.get("validacoes") or []
-        )
-        lines.append("    Ação humana necessária:")
-        lines.extend(
-            f"      - {_human_value(action)}" for action in row.get("acoes") or []
-        )
-        if row.get("relatorioJson"):
-            lines.append(f"    Relatório JSON: {_human_value(row['relatorioJson'])}")
-        if row.get("logIndividual"):
-            lines.append(f"    Log individual: {_human_value(row['logIndividual'])}")
+            if detail_files:
+                lines.append(wrapped(f"    Consultar detalhes: {', '.join(detail_files)}."))
+            elif not row.get("validacoes"):
+                lines.append("  - Consultar o log deste PDF para identificar o problema.")
 
-    lines.extend(["", "2. PDFs SEM PENDÊNCIA DE AÇÃO HUMANA"])
-    if not clear:
-        lines.append("- Nenhum.")
-    for row in clear:
-        lines.append(
-            f"- {_human_value(row.get('arquivo') or '(não informado)')} | "
-            f"pedido {_human_value(row.get('pedido') or '(não identificado)')} | "
-            f"{_human_value(row.get('resultado') or '(não informado)')}"
-        )
+    if clear:
+        names = []
+        for row in clear:
+            name = _human_value(row.get("arquivo") or row.get("pedido") or "PDF não informado")
+            if row.get("resultado") == "JÁ PROCESSADO":
+                name += " (já processado)"
+            names.append(name)
+        lines.extend(["", wrapped(f"Sem pendências: {', '.join(names)}.")])
 
-    lines.extend(["", "FIM DO LOG FINAL", "=" * 78, ""])
+    if any(row.get("resultado") not in {"SUCESSO", "JÁ PROCESSADO"} for row in pending):
+        lines.extend([
+            "",
+            "Após corrigir: atualize o índice se adicionou/alterou arquivos e execute o lote novamente.",
+        ])
+    lines.extend(["", "Detalhes técnicos: arquivos .json e .log nesta pasta.", ""])
     content = "\n".join(lines)
     path.write_text(content, encoding="utf-8")
     return content
@@ -831,6 +944,13 @@ def main() -> int:
     started_at = time.monotonic()
     load_local_environment()
     args = parse_args()
+    try:
+        update_index = choose_index_update(args.atualizar_indice)
+    except ValueError as exc:
+        print(f"[indice] ERRO: {exc}", flush=True)
+        return 1
+    if not update_index:
+        print("[indice] Atualização dispensada. O lote usará somente o índice salvo.", flush=True)
     project = Path(args.projeto).resolve()
     codex = Path(args.codex).resolve() if str(args.codex).strip() else None
     input_dir = project / "pedidos_pdf" / "entrada"
@@ -868,11 +988,12 @@ def main() -> int:
 
     try:
         if not has_pending_pdfs:
-            ensure_daily_index()
+            if update_index:
+                ensure_daily_index()
             if not pdfs:
                 print(f"Nenhum PDF encontrado em: {input_dir}")
         else:
-            order_context = load_order_context()
+            order_context = load_order_context(update_index=update_index)
     except (OSError, RuntimeError, ValueError) as exc:
         print(
             f"[indice] ERRO: não foi possível preparar o índice; "
@@ -985,7 +1106,7 @@ def main() -> int:
 
             print("  Criando pedido e copiando estampas...", flush=True)
             if order_context is None:
-                order_context = load_order_context()
+                order_context = load_order_context(update_index=update_index)
             output_dir, order_index = order_context
             result = run_creator(
                 extraction_path,

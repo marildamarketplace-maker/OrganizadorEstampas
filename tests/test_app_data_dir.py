@@ -1,5 +1,7 @@
 from pathlib import Path
 from contextlib import closing
+from contextlib import redirect_stdout
+from io import StringIO
 import json
 import sqlite3
 import tempfile
@@ -58,6 +60,57 @@ class AppDataDirectoryTest(unittest.TestCase):
                  patch.dict("os.environ", {}, clear=True), \
                  self.assertRaisesRegex(ValueError, "pasta vazia"):
                 config_module.select_app_data_dir(destination)
+
+    def test_changes_location_without_migrating_data(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            current = root / "atual"
+            destination = root / "existente"
+            location_file = root / "bootstrap" / "data_location.json"
+            current.mkdir()
+            destination.mkdir()
+            (current / "config.json").write_text("origem", encoding="utf-8")
+            (destination / "config.json").write_text("destino", encoding="utf-8")
+
+            with patch.object(config_module, "APP_DIR", current), \
+                 patch.object(config_module, "DEFAULT_APP_DIR", location_file.parent), \
+                 patch.object(config_module, "APP_DIR_LOCATION_FILE", location_file), \
+                 patch.dict("os.environ", {}, clear=True):
+                selected = config_module.select_app_data_dir(
+                    destination, migrate=False
+                )
+
+            self.assertEqual(selected, destination.resolve())
+            self.assertEqual(
+                (destination / "config.json").read_text(encoding="utf-8"),
+                "destino",
+            )
+            self.assertEqual(
+                json.loads(location_file.read_text(encoding="utf-8"))["path"],
+                str(destination.resolve()),
+            )
+
+    def test_migration_prints_progress_to_terminal(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            current = root / "atual"
+            destination = root / "nova"
+            location_file = root / "bootstrap" / "data_location.json"
+            current.mkdir()
+            (current / "config.json").write_text("{}", encoding="utf-8")
+            output = StringIO()
+
+            with patch.object(config_module, "APP_DIR", current), \
+                 patch.object(config_module, "DEFAULT_APP_DIR", location_file.parent), \
+                 patch.object(config_module, "APP_DIR_LOCATION_FILE", location_file), \
+                 patch.dict("os.environ", {}, clear=True), \
+                 redirect_stdout(output):
+                config_module.select_app_data_dir(destination, migrate=True)
+
+            terminal_log = output.getvalue()
+            self.assertIn("iniciando", terminal_log)
+            self.assertIn("copiando arquivo 'config.json'", terminal_log)
+            self.assertIn("migração concluída com sucesso", terminal_log)
 
 
 if __name__ == "__main__":

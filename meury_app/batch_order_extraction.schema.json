@@ -14,7 +14,7 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "tecidoCodigo": { "type": "string", "minLength": 1 },
+          "tecidoCodigo": { "type": "string" },
           "tecidoNome": { "type": "string", "minLength": 1 },
           "estampa": { "type": "string", "minLength": 1 },
           "variante": { "type": "string", "minLength": 1 }

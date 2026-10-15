@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from contextlib import closing
+from datetime import datetime
 import json
 import os
 import shutil
@@ -57,12 +58,20 @@ DEFAULT_CONFIG = {
     "collector_output_dir": "",
     "collector_extensions": [".jpg", ".jpeg", ".png"],
     "semantic_search_enabled": False,
+    "ignored_filename_terms": ["-", ".", "MOCKUP", "MOCLKUP"],
     "original_images_path": "",
 }
 
 
-def select_app_data_dir(target: str | Path) -> Path:
-    """Migra os dados para uma pasta vazia e persiste a escolha para o reinício."""
+def _migration_log(message: str) -> None:
+    print(
+        f"[{datetime.now():%H:%M:%S}] Migração da pasta de dados: {message}",
+        flush=True,
+    )
+
+
+def select_app_data_dir(target: str | Path, *, migrate: bool = True) -> Path:
+    """Persiste a nova pasta e, opcionalmente, migra os dados atuais."""
     if os.environ.get("MEURY_APP_DATA_PATH", "").strip():
         raise ValueError(
             "MEURY_APP_DATA_PATH está definido no ambiente. Remova ou altere essa "
@@ -72,22 +81,28 @@ def select_app_data_dir(target: str | Path) -> Path:
     current = APP_DIR.resolve(strict=False)
     if destination == current:
         return destination
-    if current in destination.parents:
+    if migrate and current in destination.parents:
         raise ValueError("A nova pasta não pode ficar dentro da pasta de dados atual.")
     destination.mkdir(parents=True, exist_ok=True)
-    if any(destination.iterdir()):
+    if migrate and any(destination.iterdir()):
         raise ValueError(
             "Escolha uma pasta vazia para evitar misturar bancos e índices diferentes."
         )
 
-    if current.is_dir():
+    if migrate:
+        _migration_log(f"iniciando de '{current}' para '{destination}'.")
+
+    if migrate and current.is_dir():
         for item in current.iterdir():
             if item == APP_DIR_LOCATION_FILE:
+                _migration_log(f"ignorando arquivo de localização '{item.name}'.")
                 continue
             destination_item = destination / item.name
             if item.name in {OPERATIONAL_DB_FILE.name + "-wal", OPERATIONAL_DB_FILE.name + "-shm"}:
+                _migration_log(f"ignorando arquivo temporário do SQLite '{item.name}'.")
                 continue
-            if item == OPERATIONAL_DB_FILE:
+            if item.name == OPERATIONAL_DB_FILE.name:
+                _migration_log(f"copiando banco SQLite consistente '{item.name}'...")
                 # O backup nativo produz uma cópia consistente mesmo quando o
                 # SQLite está em WAL; copiar apenas o arquivo principal poderia
                 # perder transações recentes, especialmente no Windows.
@@ -96,9 +111,14 @@ def select_app_data_dir(target: str | Path) -> Path:
                     with target_db:
                         source_db.backup(target_db)
             elif item.is_dir():
+                _migration_log(f"copiando pasta '{item.name}'...")
                 shutil.copytree(item, destination_item)
             else:
+                _migration_log(f"copiando arquivo '{item.name}'...")
                 shutil.copy2(item, destination_item)
+        _migration_log("cópia dos dados concluída.")
+    elif migrate:
+        _migration_log("a pasta atual não existe; não há dados para copiar.")
 
     DEFAULT_APP_DIR.mkdir(parents=True, exist_ok=True)
     temporary = APP_DIR_LOCATION_FILE.with_suffix(".tmp")
@@ -107,6 +127,9 @@ def select_app_data_dir(target: str | Path) -> Path:
         encoding="utf-8",
     )
     temporary.replace(APP_DIR_LOCATION_FILE)
+    if migrate:
+        _migration_log(f"nova localização salva em '{APP_DIR_LOCATION_FILE}'.")
+        _migration_log("migração concluída com sucesso.")
     return destination
 
 

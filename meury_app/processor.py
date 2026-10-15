@@ -5,7 +5,9 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Callable
 import csv
+import hashlib
 import json
+import os
 import re
 import shutil
 import tempfile
@@ -123,6 +125,81 @@ def validated_copy_source(
     )
 
 
+def _copy_process_is_running(pid: int) -> bool:
+    """Consulta o dono de um temporário sem encerrar nenhum processo."""
+    if pid == os.getpid():
+        return True
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        handle = kernel32.OpenProcess(0x1000, False, pid)
+        if not handle:
+            # Na dúvida (por exemplo, acesso negado), preserve o temporário.
+            return ctypes.get_last_error() != 87  # ERROR_INVALID_PARAMETER: PID ausente.
+        try:
+            exit_code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return True
+            return exit_code.value == 259  # STILL_ACTIVE.
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def _order_copy_prefix(destination: Path) -> str:
+    digest = hashlib.sha256(destination.name.casefold().encode("utf-8")).hexdigest()[:16]
+    return f".organizador-copia-{digest}-"
+
+
+def _remove_abandoned_order_copies(destination: Path) -> None:
+    """Remove somente temporários deste destino cujo processo já encerrou."""
+    prefix = _order_copy_prefix(destination)
+    for temporary in destination.parent.glob(f"{prefix}*.tmp"):
+        suffix = temporary.name[len(prefix):]
+        match = re.fullmatch(r"([1-9][0-9]*)-[a-z0-9_]+\.tmp", suffix)
+        if not match:
+            continue
+        pid = int(match.group(1))
+        if pid > 0xFFFFFFFF:
+            continue
+        if not _copy_process_is_running(pid):
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                # Um órfão bloqueado não impede uma nova cópia com nome único.
+                pass
+
+
+def _copy_order_file_atomically(source: Path, destination: Path) -> None:
+    """Só publica o nome final depois de terminar a cópia no mesmo volume."""
+    with tempfile.NamedTemporaryFile(
+        dir=destination.parent,
+        prefix=f"{_order_copy_prefix(destination)}{os.getpid()}-",
+        suffix=".tmp",
+        delete=False,
+    ) as stream:
+        temporary = Path(stream.name)
+    try:
+        shutil.copy2(source, temporary)
+        temporary.replace(destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def clean_order_date(value) -> tuple[str, str]:
     """Retorna a data para o relatório e uma versão segura para a pasta."""
     if isinstance(value, (datetime, date)):
@@ -155,7 +232,8 @@ def identifier_name_folder(identifier, name) -> str:
     identifier_part = clean_identifier(identifier)
     name_part = clean_identifier(name)
     name_part = re.sub(r"\s+", "-", name_part.strip())
-    return safe_folder_name(f"{identifier_part}-{name_part}")
+    folder_parts = (identifier_part, name_part)
+    return safe_folder_name("-".join(part for part in folder_parts if part))
 
 
 def discover_columns(headers: list) -> dict[str, int]:
@@ -314,14 +392,27 @@ def process_excel(
                     f"Pasta preparada em {time.monotonic() - folder_started:.2f}s.",
                 )
             destinations: list[str] = []
+            unavailable_sources: list[str] = []
             copied_for_item = 0
             existing_for_item = 0
             for match in matches:
-                source = validated_copy_source(Path(match), index)
+                try:
+                    source = validated_copy_source(Path(match), index)
+                except FileNotFoundError:
+                    unavailable_sources.append(str(match))
+                    if progress_callback:
+                        progress_callback(
+                            current,
+                            total,
+                            f"Arquivo do índice não está mais disponível para "
+                            f"{searched_name}; continuando o pedido...",
+                        )
+                    continue
                 destination = order_folder / source.name.upper()
-                destinations.append(str(destination))
+                _remove_abandoned_order_copies(destination)
                 if destination.exists():
                     existing_for_item += 1
+                    destinations.append(str(destination))
                 else:
                     copy_started = time.monotonic()
                     try:
@@ -335,8 +426,20 @@ def process_excel(
                             total,
                             f"Copiando {source.name} ({size_label})...",
                         )
-                    shutil.copy2(source, destination)
+                    try:
+                        _copy_order_file_atomically(source, destination)
+                    except FileNotFoundError:
+                        unavailable_sources.append(str(match))
+                        if progress_callback:
+                            progress_callback(
+                                current,
+                                total,
+                                f"Arquivo ficou indisponível durante a cópia de "
+                                f"{searched_name}; continuando o pedido...",
+                            )
+                        continue
                     copied_for_item += 1
+                    destinations.append(str(destination))
                     if progress_callback:
                         progress_callback(
                             current,
@@ -355,9 +458,22 @@ def process_excel(
                 if existing_for_item:
                     item.observacao += f" {existing_for_item} já existente(s)."
                 pedidos.add((cliente, data_folder, pedido))
-            else:
+            elif existing_for_item:
                 item.status = "JÁ EXISTE"
                 item.observacao = "Todos os arquivos já existem no pedido."
+            else:
+                item.status = "NÃO ENCONTRADO"
+                item.observacao = (
+                    "O índice apontava para um arquivo que não está mais "
+                    "disponível. Atualize o índice para corrigir a referência."
+                )
+                missing += 1
+            if unavailable_sources:
+                stale_note = (
+                    f" {len(unavailable_sources)} referência(s) desatualizada(s) "
+                    "no índice: " + " | ".join(unavailable_sources)
+                )
+                item.observacao += stale_note
 
         results.append(item)
 
@@ -486,7 +602,7 @@ def process_order_payload(
 
     rows = []
     base_folders: set[str] = set()
-    product_fields = ("tecidoCodigo", "tecidoNome", "estampa")
+    product_fields = ("tecidoNome", "estampa")
     for position, product in enumerate(products, start=1):
         if not isinstance(product, dict):
             raise ValueError(f"O produto {position} deve ser um objeto JSON.")
@@ -495,6 +611,10 @@ def process_order_payload(
             raise ValueError(
                 f"Campos ausentes no produto {position}: "
                 + ", ".join(product_missing)
+            )
+        if not isinstance(product.get("tecidoCodigo"), str):
+            raise ValueError(
+                f"O campo tecidoCodigo do produto {position} deve ser texto."
             )
         product_folder = identifier_name_folder(
             product["tecidoCodigo"], product["tecidoNome"]

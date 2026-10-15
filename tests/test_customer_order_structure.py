@@ -17,6 +17,104 @@ from meury_app.processor import process_csv_text, process_excel, process_order_p
 
 
 class CustomerOrderStructureTest(unittest.TestCase):
+    def test_missing_indexed_file_does_not_stop_remaining_products(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source_root = root / "estampas"
+            source_root.mkdir()
+            missing = source_root / "MV24773-D.jpg"
+            available = source_root / "MV27951-A.jpg"
+            available.write_bytes(b"imagem disponivel")
+            index = ImageIndex(
+                {
+                    image_key("MV24773", "MV24773-D"): [str(missing)],
+                    image_key("MV27951", "MV27951-A"): [str(available)],
+                },
+                source_dirs=[source_root.resolve()],
+            )
+            payload = {
+                "pedido": "20004987",
+                "data": "15/10/2026",
+                "clienteCodigo": "1",
+                "clienteNome": "CLIENTE",
+                "produtos": [
+                    {
+                        "tecidoCodigo": "100",
+                        "tecidoNome": "BASE UM",
+                        "estampa": "MV24773",
+                        "variante": "D",
+                    },
+                    {
+                        "tecidoCodigo": "200",
+                        "tecidoNome": "BASE DOIS",
+                        "estampa": "MV27951",
+                        "variante": "A",
+                    },
+                ],
+            }
+
+            results, summary = process_order_payload(payload, root / "saida", index)
+
+            self.assertEqual([item.status for item in results], [
+                "NÃO ENCONTRADO", "COPIADO",
+            ])
+            self.assertIn("referência(s) desatualizada(s)", results[0].observacao)
+            self.assertEqual(summary.nao_encontrados, 1)
+            self.assertEqual(summary.copiados, 1)
+            self.assertTrue(
+                (
+                    root / "saida" / "1-CLIENTE" / "15-10-2026" / "20004987"
+                    / "200-BASE-DOIS" / "MV27951-A.JPG"
+                ).exists()
+            )
+
+    def test_impressao_products_create_named_fabric_folders_without_code(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "estampas"
+            source.mkdir()
+            microfiber = source / "MV27951-A.jpg"
+            no_fabric = source / "MV24324-A.jpg"
+            microfiber.write_bytes(b"microfibra")
+            no_fabric.write_bytes(b"sem tecido")
+            payload = {
+                "pedido": "20004749",
+                "data": "30/09/2026",
+                "clienteCodigo": "5376",
+                "clienteNome": "CASA PINTO HOME LTDA",
+                "produtos": [
+                    {
+                        "tecidoCodigo": "",
+                        "tecidoNome": "MICROFIBRA",
+                        "estampa": "MV27951",
+                        "variante": "A",
+                    },
+                    {
+                        "tecidoCodigo": "",
+                        "tecidoNome": "SEM_TECIDO",
+                        "estampa": "MV24324",
+                        "variante": "A",
+                    },
+                ],
+            }
+            index = {
+                image_key("MV27951", "MV27951-A"): [str(microfiber)],
+                image_key("MV24324", "MV24324-A"): [str(no_fabric)],
+            }
+
+            results, summary = process_order_payload(payload, root / "saida", index)
+
+            order = (
+                root / "saida" / "5376-CASA-PINTO-HOME-LTDA"
+                / "30-09-2026" / "20004749"
+            )
+            self.assertEqual(summary.copiados, 2)
+            self.assertEqual(
+                [item.base for item in results], ["MICROFIBRA", "SEM_TECIDO"]
+            )
+            self.assertTrue((order / "MICROFIBRA" / "MV27951-A.JPG").exists())
+            self.assertTrue((order / "SEM_TECIDO" / "MV24324-A.JPG").exists())
+
     def test_rejects_symlink_that_escapes_index_source_during_copy(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -285,7 +383,11 @@ class CustomerOrderStructureTest(unittest.TestCase):
                         "data": "05-08-2026",
                         "clienteCodigo": "1710",
                         "clienteNome": "MV PRINTS LTDA",
-                        "produtos": [{"estampa": "6162", "variante": "A"}],
+                        "produtos": [{
+                            "tecidoNome": "TRICOLINE",
+                            "estampa": "6162",
+                            "variante": "A",
+                        }],
                     },
                     Path(temporary),
                     {},

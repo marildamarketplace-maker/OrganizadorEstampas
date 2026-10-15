@@ -25,6 +25,7 @@ from .preview_generator import generate_pending_previews
 from .cloud_preview import upload_pending_previews
 from .supabase_sync import sync_pending_records
 from .pending_sync import synchronize_pending
+from .filename_filter import normalize_ignored_filename_terms
 from .original_folder import OriginalFolderError, open_original_directory
 from .semantic_search import (
     SemanticSearchIndex, merge_hybrid_results, record_identity,
@@ -64,6 +65,12 @@ class App:
         ]
         self._validate_source_paths()
         self.output_var = tk.StringVar(value=self.config.get("output_dir", ""))
+        configured_ignored_terms = self.config.get(
+            "ignored_filename_terms", ["-", ".", "MOCKUP", "MOCLKUP"]
+        )
+        self.ignored_filename_terms_var = tk.StringVar(
+            value=", ".join(str(term) for term in configured_ignored_terms)
+        )
         self.app_data_dir_var = tk.StringVar(value=str(APP_DIR))
         self.collector_source_dirs = list(
             self.config.get("collector_source_dirs", [])
@@ -261,6 +268,26 @@ class App:
                  "Não gera previews, não envia arquivos e não usa IA.",
             style="Subtitle.TLabel", wraplength=820,
         ).pack(anchor="w", pady=(5, 0))
+        ignored_line = ttk.Frame(index_frame)
+        ignored_line.pack(fill="x", pady=(10, 0))
+        ttk.Label(ignored_line, text="Ignorar arquivos que contenham:").pack(side="left")
+        self.ignored_filename_terms_entry = ttk.Entry(
+            ignored_line, textvariable=self.ignored_filename_terms_var,
+        )
+        self.ignored_filename_terms_entry.pack(
+            side="left", fill="x", expand=True, padx=(10, 0)
+        )
+        self.ignored_filename_terms_entry.bind(
+            "<FocusOut>", lambda _event: self._save_paths()
+        )
+        self.ignored_filename_terms_entry.bind(
+            "<Return>", lambda _event: self._save_paths()
+        )
+        ttk.Label(
+            index_frame,
+            text="Separe por vírgulas. O filtro ignora maiúsculas/minúsculas, pastas e extensão.",
+            style="Subtitle.TLabel",
+        ).pack(anchor="w", pady=(3, 0))
         button_line = ttk.Frame(index_frame)
         button_line.pack(fill="x", pady=(10, 0))
         self.index_button = ttk.Button(
@@ -1448,13 +1475,25 @@ class App:
 
     def select_app_data_dir(self):
         path = filedialog.askdirectory(
-            title="Selecione uma pasta vazia para os dados do software",
+            title="Selecione a nova pasta de dados do software",
             parent=self.root,
         )
         if not path:
             return
+        migrate = messagebox.askyesnocancel(
+            "Migrar dados atuais?",
+            (
+                "Deseja copiar os dados e configurações atuais para a nova pasta?\n\n"
+                "Sim: migra os dados atuais e mostra o progresso no terminal.\n"
+                "Não: apenas passa a usar a pasta escolhida após reiniciar.\n"
+                "Cancelar: mantém a configuração atual."
+            ),
+            parent=self.root,
+        )
+        if migrate is None:
+            return
         try:
-            destination = select_app_data_dir(path)
+            destination = select_app_data_dir(path, migrate=migrate)
         except (OSError, ValueError) as exc:
             messagebox.showerror(
                 "Não foi possível alterar a pasta", str(exc), parent=self.root
@@ -1463,8 +1502,12 @@ class App:
         self.app_data_dir_var.set(str(destination))
         messagebox.showinfo(
             "Pasta de dados alterada",
-            "Os dados atuais foram copiados com segurança. Feche e abra novamente "
-            "o aplicativo para concluir a troca.",
+            (
+                "Os dados atuais foram copiados com segurança. "
+                if migrate
+                else "A nova localização foi salva sem copiar os dados atuais. "
+            )
+            + "Feche e abra novamente o aplicativo para concluir a troca.",
             parent=self.root,
         )
 
@@ -1494,11 +1537,24 @@ class App:
                 if variable.get()
             ],
             "semantic_search_enabled": self.semantic_enabled_var.get(),
+            "ignored_filename_terms": list(self._ignored_filename_terms()),
         }
         save_config(updated_config)
         # Todas as ações abertas nesta sessão passam a enxergar imediatamente a
         # mesma lista de pastas escolhida, sem exigir reinicialização.
         self.config.update(updated_config)
+
+    def _ignored_filename_terms(self):
+        variable = getattr(self, "ignored_filename_terms_var", None)
+        if variable is None:
+            return normalize_ignored_filename_terms(
+                getattr(self, "config", {}).get(
+                    "ignored_filename_terms", ["-", ".", "MOCKUP", "MOCLKUP"]
+                )
+            )
+        return normalize_ignored_filename_terms(
+            variable.get()
+        )
 
     def _try_load_saved_index(self):
         sources = [Path(source) for source in self.source_dirs]
@@ -1614,21 +1670,24 @@ class App:
         if not sources:
             messagebox.showwarning("Previews", "Adicione e indexe as pastas primeiro.")
             return
+        ignored_terms = self._ignored_filename_terms()
+        self._save_paths()
         self._choose_operation_limit(
             "Gerar previews pendentes",
-            lambda limit: self._begin_preview_generation(sources, limit),
+            lambda limit: self._begin_preview_generation(sources, limit, ignored_terms),
         )
 
-    def _begin_preview_generation(self, sources, limit):
+    def _begin_preview_generation(self, sources, limit, ignored_terms):
         self._start_controllable_operation()
         self.progress.configure(mode="determinate", value=0)
         scope = "todos" if limit is None else f"até {limit:,}"
         self.status_var.set(f"Gerando {scope} previews locais pendentes...")
         threading.Thread(
-            target=self._preview_generation_worker, args=(sources, limit), daemon=True,
+            target=self._preview_generation_worker,
+            args=(sources, limit, ignored_terms), daemon=True,
         ).start()
 
-    def _preview_generation_worker(self, sources, limit):
+    def _preview_generation_worker(self, sources, limit, ignored_terms):
         try:
             result = generate_pending_previews(
                 sources,
@@ -1636,6 +1695,7 @@ class App:
                     0, self._preview_generation_progress, current, total, message
                 ),
                 limit=limit, pause_event=self.operation_pause_event,
+                ignored_filename_terms=ignored_terms,
             )
             self.root.after(0, self._preview_generation_complete, result)
         except Exception as exc:
@@ -1650,7 +1710,7 @@ class App:
         self.progress.configure(value=100 if result.pending else 0)
         self.status_var.set(
             f"Previews finalizados: {result.completed:,} concluídos; {result.failed:,} falhas "
-            f"em {result.elapsed_seconds:.1f}s."
+            f"em {result.elapsed_seconds:.1f}s. Faltam {result.remaining:,} para finalizar."
         )
         self._finish_controllable_operation()
         self._refresh_catalog_statistics()
@@ -1658,7 +1718,8 @@ class App:
             "Previews concluídos",
             f"Pendentes encontradas: {result.pending:,}\n"
             f"Concluídas: {result.completed:,}\n"
-            f"Falhas: {result.failed:,}",
+            f"Falhas: {result.failed:,}\n\n"
+            f"Faltam para finalizar os previews: {result.remaining:,}",
         )
 
     def start_cloud_upload(self):
@@ -1666,21 +1727,24 @@ class App:
         if not sources:
             messagebox.showwarning("Cloud", "Adicione e indexe as pastas primeiro.")
             return
+        ignored_terms = self._ignored_filename_terms()
+        self._save_paths()
         self._choose_operation_limit(
             "Enviar previews para Cloud",
-            lambda limit: self._begin_cloud_upload(sources, limit),
+            lambda limit: self._begin_cloud_upload(sources, limit, ignored_terms),
         )
 
-    def _begin_cloud_upload(self, sources, limit):
+    def _begin_cloud_upload(self, sources, limit, ignored_terms):
         self._start_controllable_operation()
         self.progress.configure(mode="determinate", value=0)
         scope = "todos" if limit is None else f"até {limit:,}"
         self.status_var.set(f"Enviando {scope} previews concluídos para Cloud...")
         threading.Thread(
-            target=self._cloud_upload_worker, args=(sources, limit), daemon=True,
+            target=self._cloud_upload_worker,
+            args=(sources, limit, ignored_terms), daemon=True,
         ).start()
 
-    def _cloud_upload_worker(self, sources, limit):
+    def _cloud_upload_worker(self, sources, limit, ignored_terms):
         try:
             result = upload_pending_previews(
                 sources,
@@ -1688,6 +1752,7 @@ class App:
                     0, self._cloud_upload_progress, current, total, message
                 ),
                 limit=limit, pause_event=self.operation_pause_event,
+                ignored_filename_terms=ignored_terms,
             )
             self.root.after(0, self._cloud_upload_complete, result)
         except Exception as exc:
@@ -1699,14 +1764,34 @@ class App:
 
     def _cloud_upload_complete(self, result):
         self.progress.configure(value=100 if result.pending else 0)
-        self.status_var.set("Envio de previews para Cloud concluído.")
+        has_pending = bool(result.failed or result.remaining)
+        self.status_var.set(
+            f"Envio para Cloud finalizado. Faltam {result.remaining:,} para finalizar."
+            if has_pending
+            else "Envio de previews para Cloud concluído."
+        )
         self._finish_controllable_operation()
         self._refresh_catalog_statistics()
-        messagebox.showinfo(
+        show_message = messagebox.showwarning if has_pending else messagebox.showinfo
+        details = ""
+        if result.failure_details:
+            visible_failures = result.failure_details[:8]
+            details = "\n\nMotivos das falhas:\n- " + "\n- ".join(visible_failures)
+            omitted = len(result.failure_details) - len(visible_failures)
+            if omitted:
+                details += f"\n- ... e mais {omitted:,} falha(s)"
+            details += (
+                "\n\nOs detalhes completos também foram gravados no terminal "
+                "ou no arquivo executar_windows.log."
+            )
+        show_message(
             "Cloud",
-            f"Previews pendentes: {result.pending:,}\n"
+            f"Previews encontrados para envio: {result.pending:,}\n"
             f"Enviados: {result.completed:,}\n"
-            f"Falhas: {result.failed:,}",
+            f"Falhas: {result.failed:,}\n"
+            f"Faltam para finalizar o envio para Cloud: {result.remaining:,}\n"
+            "(inclui arquivos que ainda aguardam preview)"
+            f"{details}",
         )
 
     def start_supabase_sync(self):
@@ -1714,21 +1799,24 @@ class App:
         if not sources:
             messagebox.showwarning("Supabase", "Adicione e indexe as pastas primeiro.")
             return
+        ignored_terms = self._ignored_filename_terms()
+        self._save_paths()
         self._choose_operation_limit(
             "Sincronizar Supabase",
-            lambda limit: self._begin_supabase_sync(sources, limit),
+            lambda limit: self._begin_supabase_sync(sources, limit, ignored_terms),
         )
 
-    def _begin_supabase_sync(self, sources, limit):
+    def _begin_supabase_sync(self, sources, limit, ignored_terms):
         self._start_controllable_operation()
         self.progress.configure(mode="determinate", value=0)
         scope = "todos" if limit is None else f"até {limit:,}"
         self.status_var.set(f"Sincronizando {scope} registros com Supabase...")
         threading.Thread(
-            target=self._supabase_sync_worker, args=(sources, limit), daemon=True,
+            target=self._supabase_sync_worker,
+            args=(sources, limit, ignored_terms), daemon=True,
         ).start()
 
-    def _supabase_sync_worker(self, sources, limit):
+    def _supabase_sync_worker(self, sources, limit, ignored_terms):
         try:
             result = sync_pending_records(
                 sources,
@@ -1736,6 +1824,7 @@ class App:
                     0, self._supabase_sync_progress, current, total, message
                 ),
                 limit=limit, pause_event=self.operation_pause_event,
+                ignored_filename_terms=ignored_terms,
             )
             self.root.after(0, self._supabase_sync_complete, result)
         except Exception as exc:
@@ -1747,14 +1836,19 @@ class App:
 
     def _supabase_sync_complete(self, result):
         self.progress.configure(value=100 if result.pending else 0)
-        self.status_var.set("Sincronização com Supabase concluída.")
+        self.status_var.set(
+            f"Sincronização com Supabase finalizada. "
+            f"Faltam {result.remaining:,} para finalizar."
+        )
         self._finish_controllable_operation()
         self._refresh_catalog_statistics()
         messagebox.showinfo(
             "Supabase",
             f"Registros pendentes: {result.pending:,}\n"
             f"Sincronizados: {result.completed:,}\n"
-            f"Falhas: {result.failed:,}",
+            f"Falhas: {result.failed:,}\n\n"
+            f"Faltam para finalizar a sincronização: {result.remaining:,}\n"
+            "(inclui arquivos que ainda aguardam preview ou Cloud)",
         )
 
     def start_pending_sync(self):
@@ -1764,21 +1858,24 @@ class App:
                 "Sincronizar pendentes", "Adicione e indexe as pastas primeiro."
             )
             return
+        ignored_terms = self._ignored_filename_terms()
+        self._save_paths()
         self._choose_operation_limit(
             "Sincronizar pendentes",
-            lambda limit: self._begin_pending_sync(sources, limit),
+            lambda limit: self._begin_pending_sync(sources, limit, ignored_terms),
         )
 
-    def _begin_pending_sync(self, sources, limit):
+    def _begin_pending_sync(self, sources, limit, ignored_terms):
         self._start_controllable_operation()
         self.progress.configure(mode="determinate", value=0)
         scope = "todos" if limit is None else f"até {limit:,}"
         self.status_var.set(f"Buscando {scope} itens pendentes...")
         threading.Thread(
-            target=self._pending_sync_worker, args=(sources, limit), daemon=True,
+            target=self._pending_sync_worker,
+            args=(sources, limit, ignored_terms), daemon=True,
         ).start()
 
-    def _pending_sync_worker(self, sources, limit):
+    def _pending_sync_worker(self, sources, limit, ignored_terms):
         try:
             result = synchronize_pending(
                 sources,
@@ -1786,6 +1883,7 @@ class App:
                     0, self._pending_sync_progress, current, total, message
                 ),
                 limit=limit, pause_event=self.operation_pause_event,
+                ignored_filename_terms=ignored_terms,
             )
             self.root.after(0, self._pending_sync_complete, result)
         except Exception as exc:
@@ -1796,8 +1894,11 @@ class App:
         self.status_var.set(message)
 
     def _pending_sync_complete(self, result):
-        self.progress.configure(value=100 if not result.pending else 0)
-        self.status_var.set("Sincronização de pendentes concluída.")
+        self.progress.configure(value=100 if not result.remaining else 0)
+        self.status_var.set(
+            f"Sincronização de pendentes finalizada. "
+            f"Faltam {result.remaining:,} para finalizar."
+        )
         self._finish_controllable_operation()
         self._refresh_catalog_statistics()
         messagebox.showinfo(
@@ -1807,7 +1908,8 @@ class App:
             f"Erros: {result.errors:,}\n\n"
             f"Previews: {result.previews_completed:,}\n"
             f"Cloud: {result.uploads_completed:,}\n"
-            f"Supabase: {result.supabase_completed:,}",
+            f"Supabase: {result.supabase_completed:,}\n\n"
+            f"Faltam para finalizar todas as etapas: {result.remaining:,}",
         )
 
     def _index_worker(self, sources):
@@ -2223,6 +2325,8 @@ class App:
         self.cloud_button.configure(state=state)
         self.supabase_button.configure(state=state)
         self.pending_sync_button.configure(state=state)
+        if hasattr(self, "ignored_filename_terms_entry"):
+            self.ignored_filename_terms_entry.configure(state=state)
         self.semantic_update_button.configure(state=state)
         self.semantic_rebuild_button.configure(state=state)
         self.visual_find_button.configure(state=state)

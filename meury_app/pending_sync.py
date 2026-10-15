@@ -8,10 +8,11 @@ from typing import Callable
 import threading
 import time
 
-from .cloud_preview import PreviewUploader, upload_pending_previews
+from .cloud_preview import PreviewUploader, needs_cloud_upload, upload_pending_previews
+from .filename_filter import is_ignored_filename
 from .indexer import load_catalog_records
-from .preview_generator import generate_pending_previews
-from .supabase_sync import SupabaseClient, sync_pending_records
+from .preview_generator import generate_pending_previews, needs_preview_generation
+from .supabase_sync import SupabaseClient, needs_supabase_sync, sync_pending_records
 
 
 @dataclass(frozen=True)
@@ -24,18 +25,19 @@ class PendingSyncResult:
     uploads_completed: int
     supabase_completed: int
     elapsed_seconds: float
+    remaining: int = 0
 
 
 def _needs_preview(record: dict) -> bool:
-    return record.get("preview_status") in {"pending", "failed"}
+    return needs_preview_generation(record)
 
 
 def _needs_cloud(record: dict) -> bool:
-    return _needs_preview(record) or record.get("cloud_status") in {"pending", "failed"}
+    return _needs_preview(record) or needs_cloud_upload(record)
 
 
 def _needs_supabase(record: dict) -> bool:
-    return _needs_cloud(record) or record.get("supabase_status") in {"pending", "failed"}
+    return _needs_cloud(record) or needs_supabase_sync(record)
 
 
 def _active(record: dict) -> bool:
@@ -55,6 +57,7 @@ def synchronize_pending(
     uploader: PreviewUploader | None = None, supabase_client: SupabaseClient | None = None,
     progress_callback: Callable[[int, int, str], None] | None = None,
     limit: int | None = None, pause_event: threading.Event | None = None,
+    ignored_filename_terms=None,
 ) -> PendingSyncResult:
     """Gera derivados, envia-os e publica metadados, sempre nessa ordem."""
     initial = load_catalog_records(source_dirs)
@@ -63,6 +66,7 @@ def synchronize_pending(
     selected = [
         record for record in initial
         if _active(record) and _needs_supabase(record)
+        and not is_ignored_filename(record, ignored_filename_terms)
     ]
     if limit is not None:
         selected = selected[:limit]
@@ -89,25 +93,30 @@ def synchronize_pending(
         source_dirs, preview_dir=preview_dir,
         progress_callback=stage_progress("previews"),
         pause_event=pause_event, allowed_asset_ids=allowed_asset_ids,
+        ignored_filename_terms=ignored_filename_terms,
     )
     processed_units += preview.pending
     cloud = upload_pending_previews(
         source_dirs, uploader=uploader, preview_dir=preview_dir,
         progress_callback=stage_progress("Cloud"),
         pause_event=pause_event, allowed_asset_ids=allowed_asset_ids,
+        ignored_filename_terms=ignored_filename_terms,
     )
     processed_units += cloud.pending
     supabase = sync_pending_records(
         source_dirs, client=supabase_client,
         progress_callback=stage_progress("Supabase"),
         pause_event=pause_event, allowed_asset_ids=allowed_asset_ids,
+        ignored_filename_terms=ignored_filename_terms,
     )
     processed_units += supabase.pending
 
     current = load_catalog_records(source_dirs) or []
     pending = sum(
         1 for record in current
-        if _active(record) and (
+        if _active(record)
+        and not is_ignored_filename(record, ignored_filename_terms)
+        and (
             record.get("preview_status") == "pending"
             or record.get("cloud_status") == "pending"
             or record.get("supabase_status") == "pending"
@@ -115,11 +124,19 @@ def synchronize_pending(
     )
     errors = sum(
         1 for record in current
-        if _active(record) and (
+        if _active(record)
+        and not is_ignored_filename(record, ignored_filename_terms)
+        and (
             record.get("preview_status") == "failed"
             or record.get("cloud_status") == "failed"
             or record.get("supabase_status") == "failed"
         )
+    )
+    remaining = sum(
+        1 for record in current
+        if _active(record)
+        and not is_ignored_filename(record, ignored_filename_terms)
+        and _needs_supabase(record)
     )
     return PendingSyncResult(
         total_work=total_work,
@@ -130,4 +147,5 @@ def synchronize_pending(
         uploads_completed=cloud.completed,
         supabase_completed=supabase.completed,
         elapsed_seconds=time.monotonic() - started,
+        remaining=remaining,
     )

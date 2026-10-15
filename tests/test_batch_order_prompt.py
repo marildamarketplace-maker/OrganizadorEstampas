@@ -64,26 +64,39 @@ class BatchOrderPromptTest(unittest.TestCase):
             self.assertIn("Relatórios concluídos", logged)
             self.assertIn("Tempo total da criação", logged)
 
-    def test_exports_only_products_containing_sublime(self):
+    def test_exports_sublime_and_impressao_products(self):
         prompt = build_prompt(Path("/projeto"), Path("/pedido.pdf"))
 
-        self.assertIn(
-            'Inclua em "produtos" somente\nlinhas cuja descrição do produto contenha a palavra isolada "SUBLIME"',
-            prompt,
-        )
-        self.assertIn("Ignore completamente todas as outras linhas", prompt)
-        self.assertIn("cada produto SUBLIME incluído", prompt)
+        self.assertIn('a descrição contém a palavra isolada "SUBLIME"', prompt)
+        self.assertIn('começa com a palavra "IMPRESSÃO"', prompt)
+        self.assertIn('"IMPRESSAO", "IMPRESÃO"', prompt)
+        self.assertIn("Aceite espaço, barra, hífen ou dois-pontos", prompt)
+        self.assertIn("Ignore completamente as demais linhas", prompt)
+
+    def test_maps_impressao_product_with_fabric(self):
+        prompt = build_prompt(Path("/projeto"), Path("/pedido.pdf"))
+
+        self.assertIn('"IMPRESSÃO MV27951 MICROFIBRA"', prompt)
+        self.assertIn('tecidoNome "MICROFIBRA", estampa "MV27951"', prompt)
+        self.assertIn('variante "A"', prompt)
+
+    def test_maps_impressao_product_without_fabric(self):
+        prompt = build_prompt(Path("/projeto"), Path("/pedido.pdf"))
+
+        self.assertIn('"IMPRESSÃO/MV24324"', prompt)
+        self.assertIn('tecidoNome\n  "SEM_TECIDO", estampa "MV24324"', prompt)
 
     def test_uses_customer_field_instead_of_issuing_company(self):
         prompt = build_prompt(Path("/projeto"), Path("/pedido.pdf"))
 
         self.assertIn('campo "Cliente" como clienteNome', prompt)
-        self.assertIn('Nunca use o campo "Empresa" como clienteNome', prompt)
+        self.assertIn('"Cliente: 5376 - CASA PINTO HOME LTDA"', prompt)
+        self.assertIn('Nunca use o campo "Empresa" como\nclienteNome', prompt)
 
     def test_codex_only_extracts_and_does_not_create_the_order(self):
         prompt = build_prompt(Path("/projeto"), Path("/pedido.pdf"))
 
-        self.assertIn("Não execute programas, não crie pastas e não copie arquivos", prompt)
+        self.assertIn("Não altere, crie, mova, copie ou exclua arquivos", prompt)
         self.assertIn("A etapa seguinte do processador cuidará da criação", prompt)
         self.assertNotIn("criar_pedido.py", prompt)
 
@@ -104,6 +117,22 @@ class BatchOrderPromptTest(unittest.TestCase):
         self.assertTrue(valid_extraction(extraction))
         extraction["produtos"][0]["estampa"] = ""
         self.assertFalse(valid_extraction(extraction))
+
+    def test_validates_impressao_without_fabric_code(self):
+        extraction = {
+            "pedido": "20004749",
+            "data": "30/09/2026",
+            "clienteCodigo": "5376",
+            "clienteNome": "CASA PINTO HOME LTDA",
+            "produtos": [{
+                "tecidoCodigo": "",
+                "tecidoNome": "MICROFIBRA",
+                "estampa": "MV27951",
+                "variante": "A",
+            }],
+        }
+
+        self.assertTrue(valid_extraction(extraction))
 
     def test_moves_completed_pdf_without_overwriting_same_name(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -464,11 +493,10 @@ class BatchOrderPromptTest(unittest.TestCase):
             )
 
             self.assertEqual(final_log_path.read_text(encoding="utf-8"), content)
-            self.assertIn("LOG FINAL DO PROCESSAMENTO DE PDFs", content)
-            self.assertIn("STATUS GERAL: AÇÃO HUMANA NECESSÁRIA", content)
-            self.assertIn("PDFs que exigem ação humana: 1", content)
+            self.assertIn("RESUMO DOS PEDIDOS", content)
+            self.assertIn("Com pendências: 1", content)
             self.assertIn("pedido_com_erro.pdf", content)
-            self.assertIn("Por que precisa de validação", content)
+            self.assertIn("Localizar estampas: 6162-A", content)
             self.assertIn("Cadastrar a estampa e reprocessar", content)
             self.assertIn(r"pedido_ok\nforjado.pdf", content)
             self.assertNotIn("pedido_ok\nforjado.pdf", content)
@@ -481,7 +509,7 @@ class BatchOrderPromptTest(unittest.TestCase):
             (input_dir / "pedido.pdf").write_bytes(b"%PDF-1.4")
             extraction_dir = project / "pedidos_pdf" / ".controle" / "extracoes"
             extraction_dir.mkdir(parents=True)
-            (extraction_dir / "v1_hash-teste.json").write_text(
+            (extraction_dir / "v2_hash-teste.json").write_text(
                 json.dumps(self.valid_order()), encoding="utf-8"
             )
             creator_result = {
@@ -499,7 +527,9 @@ class BatchOrderPromptTest(unittest.TestCase):
             with (
                 patch(
                     "meury_app.batch_order_processor.parse_args",
-                    return_value=SimpleNamespace(projeto=str(project), codex=""),
+                    return_value=SimpleNamespace(
+                        projeto=str(project), codex="", atualizar_indice=True,
+                    ),
                 ),
                 patch("meury_app.batch_order_processor.load_local_environment"),
                 patch(
@@ -525,8 +555,8 @@ class BatchOrderPromptTest(unittest.TestCase):
                 report_dirs[0] / "LOG_FINAL_ACAO_HUMANA.txt"
             ).read_text(encoding="utf-8")
             self.assertIn("pedido.pdf", final_log)
-            self.assertIn("Estampa não encontrada: 6162-A", final_log)
-            self.assertIn("AÇÃO HUMANA NECESSÁRIA", final_log)
+            self.assertIn("Localizar estampas: 6162-A", final_log)
+            self.assertIn("O QUE PRECISA SER FEITO", final_log)
 
 
 if __name__ == "__main__":

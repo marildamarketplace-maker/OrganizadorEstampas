@@ -16,9 +16,13 @@ import threading
 import time
 
 from .config import PREVIEW_DIR, ensure_app_dir
-from .indexer import _operational_db_path, load_catalog_records
+from .indexer import (
+    _operational_db_path, calculate_content_hash, load_catalog_records,
+    valid_content_hash,
+)
 from .operational_store import sync_records
 from .index_progress import IndexProgress
+from .filename_filter import is_ignored_filename
 from .preview_progress import PreviewProgress
 
 
@@ -35,11 +39,23 @@ class PreviewGenerationResult:
     completed: int
     failed: int
     elapsed_seconds: float
+    remaining: int = 0
+
+
+def needs_preview_generation(record: dict) -> bool:
+    return (
+        record.get("preview_status") in {"pending", "failed"}
+        or (
+            record.get("preview_status") in {"completed", "ready"}
+            and bool(record.get("content_hash"))
+            and record.get("preview_content_hash") != record.get("content_hash")
+        )
+    )
 
 
 def _preview_identity(record: dict) -> str:
     content_hash = str(record.get("content_hash", "")).strip()
-    if len(content_hash) == 64 and all(character in "0123456789abcdefABCDEF" for character in content_hash):
+    if valid_content_hash(content_hash):
         return content_hash.lower()
     identity = (
         f"{int(record.get('source', 0))}:"
@@ -85,6 +101,17 @@ def create_preview(
     for field, actual in (("size", stat.st_size), ("mtime_ns", stat.st_mtime_ns)):
         if record.get(field, -1) != -1 and int(record[field]) != actual:
             raise ValueError("O original mudou desde a indexação. Atualize o índice antes de gerar o preview.")
+    if not valid_content_hash(record.get("content_hash")):
+        record["content_hash"] = calculate_content_hash(source)
+        after_hash = source.stat()
+        if (
+            after_hash.st_size != stat.st_size
+            or after_hash.st_mtime_ns != stat.st_mtime_ns
+        ):
+            raise ValueError(
+                "O original mudou durante o cálculo do hash. "
+                "Atualize o índice antes de gerar o preview."
+            )
     try:
         from PIL import Image, ImageOps, features
     except ImportError as exc:
@@ -168,6 +195,7 @@ def generate_pending_previews(
     progress_callback: Callable[[int, int, str], None] | None = None,
     pause_event: threading.Event | None = None,
     allowed_asset_ids: set[str] | None = None,
+    ignored_filename_terms=None,
     max_workers: int | None = None,
 ) -> PreviewGenerationResult:
     """Fila limitada, imagens em paralelo e persistência apenas no coordenador."""
@@ -189,12 +217,22 @@ def generate_pending_previews(
         1 for record in records
         if record.get("active", True) and not record.get("missing_locally", False)
         and record.get("preview_status") in {"completed", "ready"}
+        and not needs_preview_generation(record)
+        and not is_ignored_filename(record, ignored_filename_terms)
+    )
+    total_pending = sum(
+        1 for record in records
+        if record.get("active", True)
+        and not record.get("missing_locally", False)
+        and not is_ignored_filename(record, ignored_filename_terms)
+        and needs_preview_generation(record)
     )
     candidates = (
         record for record in records
         if record.get("active", True)
         and not record.get("missing_locally", False)
-        and record.get("preview_status") in {"pending", "failed"}
+        and needs_preview_generation(record)
+        and not is_ignored_filename(record, ignored_filename_terms)
         and (
             allowed_asset_ids is None
             or str(record.get("asset_id", "")) in allowed_asset_ids
@@ -247,6 +285,10 @@ def generate_pending_previews(
                     record = running.pop(future)
                     try:
                         preview = future.result()
+                        if not valid_content_hash(record.get("content_hash")):
+                            raise ValueError(
+                                "O preview não pode ser concluído sem um SHA-256 válido."
+                            )
                         record["preview_status"] = "completed"
                         record["preview_path"] = str(preview)
                         record["preview_content_hash"] = str(record.get("content_hash", ""))
@@ -272,4 +314,5 @@ def generate_pending_previews(
     return PreviewGenerationResult(
         pending=len(pending), completed=completed, failed=failed,
         elapsed_seconds=time.monotonic() - started,
+        remaining=total_pending - completed,
     )

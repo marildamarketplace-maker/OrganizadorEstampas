@@ -10,7 +10,10 @@ from PIL import Image, ImageCms
 from PIL import features
 
 import meury_app.indexer as indexer_module
-from meury_app.indexer import build_index, load_index_payload
+from meury_app.indexer import (
+    build_index, load_index_payload, update_index_incremental,
+)
+from meury_app.operational_store import sync_records
 from meury_app.preview_generator import create_preview, generate_pending_previews
 
 
@@ -138,6 +141,60 @@ class PreviewGeneratorTest(unittest.TestCase):
             self.assertNotEqual(preview, original)
             with Image.open(preview) as image:
                 self.assertEqual(image.size, (1024, 512))
+
+    def test_legacy_record_gets_hash_before_preview_is_completed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "artes"
+            original = source / "100" / "100-A.png"
+            original.parent.mkdir(parents=True)
+            Image.new("RGB", (40, 20), "purple").save(original)
+            patches = self.catalog_files(root)
+            with patches[0], patches[1], patches[2], patches[3]:
+                build_index(source)
+                record = load_index_payload(source)["records"][0]
+                record["content_hash"] = ""
+                record["preview_content_hash"] = ""
+                record["preview_status"] = "pending"
+                sync_records(indexer_module._operational_db_path(), [record])
+
+                result = generate_pending_previews(
+                    source, preview_dir=root / "previews"
+                )
+                updated = load_index_payload(source)["records"][0]
+
+            expected = hashlib.sha256(original.read_bytes()).hexdigest()
+            self.assertEqual(result.completed, 1)
+            self.assertEqual(updated["preview_status"], "completed")
+            self.assertEqual(updated["content_hash"], expected)
+            self.assertEqual(updated["preview_content_hash"], expected)
+
+    def test_incremental_index_repairs_unchanged_legacy_record_without_hash(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "artes"
+            original = source / "101" / "101-A.png"
+            original.parent.mkdir(parents=True)
+            Image.new("RGB", (40, 20), "orange").save(original)
+            patches = self.catalog_files(root)
+            with patches[0], patches[1], patches[2], patches[3]:
+                build_index(source)
+                record = load_index_payload(source)["records"][0]
+                record["content_hash"] = ""
+                record["preview_content_hash"] = ""
+                record["preview_status"] = "completed"
+                record["preview_path"] = str(root / "previews" / "legado.webp")
+                sync_records(indexer_module._operational_db_path(), [record])
+
+                update_index_incremental(source)
+                updated = load_index_payload(source)["records"][0]
+
+            self.assertEqual(
+                updated["content_hash"],
+                hashlib.sha256(original.read_bytes()).hexdigest(),
+            )
+            self.assertEqual(updated["preview_status"], "pending")
+            self.assertEqual(updated["preview_content_hash"], "")
 
     def test_pauses_before_processing_and_resumes_safely(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -1,4 +1,5 @@
 from pathlib import Path
+import hashlib
 import tempfile
 import threading
 import unittest
@@ -131,6 +132,26 @@ class CloudPreviewTest(unittest.TestCase):
             self.assertEqual(by_code["100"]["cloud_status"], "completed")
             self.assertEqual(by_code["200"]["cloud_status"], "failed")
             self.assertIn("Cloud: RuntimeError", by_code["200"]["last_error"])
+            self.assertEqual(len(result.failure_details), 1)
+            self.assertIn("200", result.failure_details[0])
+            self.assertIn("RuntimeError: falha simulada", result.failure_details[0])
+
+    def test_logs_cloud_failure_with_file_and_reason(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            patches = self.catalog_files(root)
+            with patches[0], patches[1], patches[2], patches[3]:
+                source, preview_dir = self.prepare(root, ("200",))
+                with self.assertLogs("meury_app.cloud_preview", level="ERROR") as logs:
+                    upload_pending_previews(
+                        source, uploader=FakeUploader(fail_code="200"),
+                        preview_dir=preview_dir,
+                    )
+
+            output = "\n".join(logs.output)
+            self.assertIn("codigo=200", output)
+            self.assertIn("200-A.png", output)
+            self.assertIn("RuntimeError: falha simulada", output)
 
     def test_blocks_original_even_if_marked_as_preview(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -288,6 +309,7 @@ class CloudPreviewTest(unittest.TestCase):
                 )
                 self.assertEqual(result.pending, 1)
                 self.assertEqual(result.completed, 1)
+                self.assertEqual(result.remaining, 2)
                 self.assertEqual(len(uploader.calls), 1)
                 records = load_index_payload(source)["records"]
                 untouched = next(r for r in records if r["codigo"] == "100")
@@ -312,6 +334,108 @@ class CloudPreviewTest(unittest.TestCase):
         for workers in (0, 9):
             with self.subTest(workers=workers), self.assertRaises(ValueError):
                 upload_pending_previews([], max_workers=workers)
+
+    def test_recovers_hashes_from_legacy_completed_preview_before_upload(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            patches = self.catalog_files(root)
+            with patches[0], patches[1], patches[2], patches[3]:
+                source, preview_dir = self.prepare(root)
+                record = load_index_payload(source)["records"][0]
+                original = Path(record["path"])
+                expected_hash = hashlib.sha256(original.read_bytes()).hexdigest()
+                record["content_hash"] = ""
+                record["preview_content_hash"] = ""
+                record["cloud_status"] = "pending"
+                sync_records(indexer_module._operational_db_path(), [record])
+
+                uploader = FakeUploader()
+                result = upload_pending_previews(
+                    source, uploader=uploader, preview_dir=preview_dir
+                )
+                updated = load_index_payload(source)["records"][0]
+
+            self.assertEqual(result.completed, 1)
+            self.assertEqual(result.failed, 0)
+            self.assertEqual(result.remaining, 0)
+            self.assertEqual(updated["content_hash"], expected_hash)
+            self.assertEqual(updated["preview_content_hash"], expected_hash)
+            self.assertEqual(updated["cloud_content_hash"], expected_hash)
+
+    def test_legacy_preview_with_changed_original_is_reported_as_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            patches = self.catalog_files(root)
+            with patches[0], patches[1], patches[2], patches[3]:
+                source, preview_dir = self.prepare(root)
+                record = load_index_payload(source)["records"][0]
+                record["content_hash"] = ""
+                record["preview_content_hash"] = ""
+                record["cloud_status"] = "pending"
+                record["size"] += 1
+                sync_records(indexer_module._operational_db_path(), [record])
+
+                uploader = FakeUploader()
+                result = upload_pending_previews(
+                    source, uploader=uploader, preview_dir=preview_dir
+                )
+                updated = load_index_payload(source)["records"][0]
+
+            self.assertEqual(result.completed, 0)
+            self.assertEqual(result.failed, 1)
+            self.assertEqual(result.remaining, 1)
+            self.assertEqual(uploader.calls, [])
+            self.assertEqual(updated["cloud_status"], "failed")
+            self.assertIn("Atualize o índice", updated["cloud_last_error"])
+
+    def test_reports_cloud_pending_record_that_is_not_ready_for_upload(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            patches = self.catalog_files(root)
+            with patches[0], patches[1], patches[2], patches[3]:
+                source, preview_dir = self.prepare(root)
+                record = load_index_payload(source)["records"][0]
+                record["preview_status"] = "pending"
+                record["cloud_status"] = "pending"
+                sync_records(indexer_module._operational_db_path(), [record])
+
+                result = upload_pending_previews(
+                    source, uploader=FakeUploader(), preview_dir=preview_dir
+                )
+
+            self.assertEqual(result.pending, 0)
+            self.assertEqual(result.completed, 0)
+            self.assertEqual(result.failed, 0)
+            self.assertEqual(result.remaining, 1)
+
+    def test_remaining_includes_blocked_and_stale_files_outside_asset_scope(self):
+        def ready(number):
+            record = {
+                "asset_id": f"asset-{number}", "codigo": str(number),
+                "filename": f"{number}-A.jpg", "preview_path": "preview.webp",
+                "preview_status": "completed", "cloud_status": "completed",
+                "content_hash": "a" * 64, "preview_content_hash": "a" * 64,
+                "cloud_content_hash": "a" * 64,
+            }
+            record["storage_key"] = preview_storage_key(record, Path("preview.webp"))
+            return record
+
+        items = [ready(number) for number in range(7)]
+        items[1]["cloud_content_hash"] = "b" * 64
+        items[2]["storage_key"] = "legacy/preview.webp"
+        items[3]["preview_status"] = "pending"
+        items[4].update(filename="900-MOCKUP.jpg", cloud_status="pending")
+        items[5].update(active=False, cloud_status="pending")
+        items[6].update(missing_locally=True, cloud_status="failed")
+        uploader = FakeUploader()
+        with patch("meury_app.cloud_preview.load_catalog_records", return_value=items):
+            result = upload_pending_previews(
+                [], uploader=uploader, allowed_asset_ids=set(),
+                ignored_filename_terms="-, ., MOCKUP, MOCLKUP",
+            )
+        self.assertEqual(result.pending, 0)
+        self.assertEqual(result.remaining, 3)
+        self.assertEqual(uploader.calls, [])
 
     def test_storage_key_sanitizes_segments(self):
         key = preview_storage_key(

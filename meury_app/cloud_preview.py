@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Callable, Protocol
 from urllib.parse import quote
 import mimetypes
+import logging
 import os
 import re
 import threading
@@ -16,9 +17,17 @@ import time
 
 from .asset_identity import storage_asset_segment
 from .config import PREVIEW_DIR
-from .indexer import _operational_db_path, load_catalog_records
+from .filename_filter import is_ignored_filename
+from .indexer import (
+    _operational_db_path, calculate_content_hash, load_catalog_records,
+    valid_content_hash,
+)
 from .operational_store import sync_records
+from .preview_generator import needs_preview_generation
 from .retry_policy import RetryFailure, run_with_retry
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -182,6 +191,8 @@ class CloudUploadResult:
     completed: int
     failed: int
     elapsed_seconds: float
+    remaining: int = 0
+    failure_details: tuple[str, ...] = ()
 
 
 def _resolve_derived_preview(record: dict, allowed_dir: Path) -> Path:
@@ -218,12 +229,56 @@ def preview_storage_key(record: dict, preview_path: Path) -> str:
     return f"estampas/{codigo}/{variante}/{asset_id}/preview{suffix}"
 
 
+def needs_cloud_upload(record: dict) -> bool:
+    return (
+        record.get("cloud_status") in {"pending", "failed"}
+        or (
+            record.get("cloud_status") == "completed"
+            and (
+                record.get("cloud_content_hash") != record.get("content_hash")
+                or record.get("storage_key") != preview_storage_key(
+                    record, Path(str(record.get("preview_path", "")))
+                )
+            )
+        )
+    )
+
+
+def _recover_legacy_hashes(record: dict) -> None:
+    """Preenche hashes ausentes sem aceitar um original alterado."""
+    content_hash = str(record.get("content_hash", "")).strip()
+    preview_hash = str(record.get("preview_content_hash", "")).strip()
+    if valid_content_hash(content_hash) and valid_content_hash(preview_hash):
+        return
+
+    original = Path(str(record.get("path", ""))).expanduser().resolve()
+    stat = original.stat()
+    expected_size = int(record.get("size", -1))
+    expected_mtime = int(record.get("mtime_ns", -1))
+    if (
+        expected_size < 0
+        or expected_mtime < 0
+        or stat.st_size != expected_size
+        or stat.st_mtime_ns != expected_mtime
+    ):
+        raise ValueError(
+            "O original mudou ou não possui assinatura válida. "
+            "Atualize o índice e gere o preview novamente."
+        )
+    if not valid_content_hash(content_hash):
+        content_hash = calculate_content_hash(original)
+        record["content_hash"] = content_hash
+    if not valid_content_hash(preview_hash):
+        record["preview_content_hash"] = content_hash
+
+
 def upload_pending_previews(
     source_dirs, *, uploader: PreviewUploader | None = None,
     preview_dir: Path | None = None, limit: int | None = None,
     progress_callback: Callable[[int, int, str], None] | None = None,
     pause_event: threading.Event | None = None,
     allowed_asset_ids: set[str] | None = None,
+    ignored_filename_terms=None,
     max_workers: int | None = None,
 ) -> CloudUploadResult:
     workers = max_workers if max_workers is not None else int(os.environ.get("MEURY_CLOUD_WORKERS", "4"))
@@ -238,24 +293,12 @@ def upload_pending_previews(
         if record.get("active", True)
         and not record.get("missing_locally", False)
         and record.get("preview_status") == "completed"
-        and bool(record.get("content_hash"))
-        and record.get("preview_content_hash") == record.get("content_hash")
+        and not is_ignored_filename(record, ignored_filename_terms)
         and (
             allowed_asset_ids is None
             or str(record.get("asset_id", "")) in allowed_asset_ids
         )
-        and (
-            record.get("cloud_status") in {"pending", "failed"}
-            or (
-                record.get("cloud_status") == "completed"
-                and (
-                    record.get("cloud_content_hash") != record.get("content_hash")
-                    or record.get("storage_key") != preview_storage_key(
-                        record, Path(str(record.get("preview_path", "")))
-                    )
-                )
-            )
-        )
+        and needs_cloud_upload(record)
     ]
     if limit is not None:
         pending = pending[:limit]
@@ -275,6 +318,7 @@ def upload_pending_previews(
 
     started = time.monotonic()
     completed = failed = 0
+    failure_details = []
     key_locks = WeakValueDictionary()
     key_registry_lock = threading.Lock()
 
@@ -282,6 +326,12 @@ def upload_pending_previews(
         # O worker devolve uma cópia; só o coordenador altera o catálogo e SQLite.
         record = dict(original_record)
         try:
+            _recover_legacy_hashes(record)
+            if record.get("preview_content_hash") != record.get("content_hash"):
+                raise ValueError(
+                    "O preview está desatualizado em relação ao original. "
+                    "Gere o preview novamente."
+                )
             preview = _resolve_derived_preview(record, allowed_dir)
             original = Path(str(record.get("path", ""))).expanduser().resolve()
             if preview == original:
@@ -324,6 +374,12 @@ def upload_pending_previews(
             record["cloud_status"] = "failed"
             record["last_error"] = f"Cloud: {type(exc).__name__}: {exc}"
             record["cloud_last_error"] = f"{type(exc).__name__}: {exc}"
+            logger.error(
+                "Falha no envio para Cloud | codigo=%s | arquivo=%s | motivo=%s",
+                record.get("codigo") or record.get("design_id") or "SEM-CODIGO",
+                record.get("path") or record.get("filename") or "SEM-ARQUIVO",
+                record["cloud_last_error"],
+            )
 
         except Exception as exc:
             # Validações locais não entram no retry externo.
@@ -332,6 +388,12 @@ def upload_pending_previews(
             record["cloud_status"] = "failed"
             record["last_error"] = f"Cloud: {type(exc).__name__}: {exc}"
             record["cloud_last_error"] = f"{type(exc).__name__}: {exc}"
+            logger.error(
+                "Falha no envio para Cloud | codigo=%s | arquivo=%s | motivo=%s",
+                record.get("codigo") or record.get("design_id") or "SEM-CODIGO",
+                record.get("path") or record.get("filename") or "SEM-ARQUIVO",
+                record["cloud_last_error"],
+            )
 
         return record
 
@@ -370,6 +432,17 @@ def upload_pending_previews(
                     record.update(future.result())
                     completed += record["cloud_status"] == "completed"
                     failed += record["cloud_status"] == "failed"
+                    if record["cloud_status"] == "failed":
+                        label = (
+                            record.get("relative_path")
+                            or record.get("filename")
+                            or record.get("path")
+                            or "arquivo não identificado"
+                        )
+                        failure_details.append(
+                            f"{record.get('codigo') or 'SEM-CÓDIGO'} — {label}: "
+                            f"{record.get('cloud_last_error') or 'erro desconhecido'}"
+                        )
                     dirty.append(record)
                 if len(dirty) >= 50 or time.monotonic() - last_flush >= 1:
                     flush()
@@ -381,7 +454,15 @@ def upload_pending_previews(
                     )
     finally:
         flush()
+    remaining = sum(
+        1 for record in records
+        if record.get("active", True)
+        and not record.get("missing_locally", False)
+        and not is_ignored_filename(record, ignored_filename_terms)
+        and (needs_preview_generation(record) or needs_cloud_upload(record))
+    )
     return CloudUploadResult(
         pending=len(pending), completed=completed, failed=failed,
-        elapsed_seconds=time.monotonic() - started,
+        elapsed_seconds=time.monotonic() - started, remaining=remaining,
+        failure_details=tuple(failure_details),
     )

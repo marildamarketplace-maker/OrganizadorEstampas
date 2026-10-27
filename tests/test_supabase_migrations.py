@@ -42,6 +42,13 @@ class SupabaseMigrationsTest(unittest.TestCase):
         ):
             self.assertNotIn(f'"{field}"', payload_body)
 
+    def test_timestamp_defaults_are_repaired_for_existing_tables(self):
+        sql = (MIGRATIONS / "005_corrigir_defaults_datas_estampas.sql").read_text(
+            encoding="utf-8"
+        ).lower()
+        self.assertIn("alter column created_at set default now()", sql)
+        self.assertIn("alter column updated_at set default now()", sql)
+
 
 if __name__ == "__main__":
     unittest.main()

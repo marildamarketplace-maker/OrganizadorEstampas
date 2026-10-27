@@ -558,6 +558,81 @@ class BatchOrderPromptTest(unittest.TestCase):
             self.assertIn("Localizar estampas: 6162-A", final_log)
             self.assertIn("O QUE PRECISA SER FEITO", final_log)
 
+    def test_batch_main_recreates_order_folder_for_previously_processed_pdf(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            project = Path(temporary)
+            input_dir = project / "pedidos_pdf" / "entrada"
+            input_dir.mkdir(parents=True)
+            (input_dir / "20005192.pdf").write_bytes(b"%PDF-1.4")
+
+            control_dir = project / "pedidos_pdf" / ".controle"
+            extraction_dir = control_dir / "extracoes"
+            extraction_dir.mkdir(parents=True)
+            (extraction_dir / "v2_hash-processado.json").write_text(
+                json.dumps(self.valid_order()), encoding="utf-8"
+            )
+            (control_dir / "historico.jsonl").write_text(
+                json.dumps(
+                    {
+                        "arquivo": "20005192.pdf",
+                        "pedido": "20005192",
+                        "resultadoFinal": "SUCESSO",
+                        "sha256": "hash-processado",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            output_dir = project / "saida"
+            recreated_dir = output_dir / "pedido-recriado"
+
+            def create_again(*_args, **_kwargs):
+                recreated_dir.mkdir(parents=True)
+                return {
+                    "sucesso": True,
+                    "pedido": "20005192",
+                    "pastaPedido": str(recreated_dir),
+                    "copiados": 0,
+                    "arquivosCopiados": [],
+                    "estampasNaoEncontradas": [],
+                    "estampasDuplicadas": [],
+                    "arquivosJaExistentes": [],
+                    "erros": [],
+                }
+
+            with (
+                patch(
+                    "meury_app.batch_order_processor.parse_args",
+                    return_value=SimpleNamespace(
+                        projeto=str(project), codex="", atualizar_indice=False,
+                    ),
+                ),
+                patch("meury_app.batch_order_processor.load_local_environment"),
+                patch(
+                    "meury_app.batch_order_processor.load_order_context",
+                    return_value=(output_dir, {}),
+                ),
+                patch(
+                    "meury_app.batch_order_processor.file_hash",
+                    return_value="hash-processado",
+                ),
+                patch(
+                    "meury_app.batch_order_processor.create_order_response",
+                    side_effect=create_again,
+                ),
+                patch(
+                    "meury_app.batch_order_processor.extract_with_fallback"
+                ) as extract_mock,
+                redirect_stdout(io.StringIO()) as stdout,
+            ):
+                exit_code = batch_main()
+
+            self.assertEqual(exit_code, 0)
+            self.assertTrue(recreated_dir.is_dir())
+            extract_mock.assert_not_called()
+            self.assertIn("recriando a pasta", stdout.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -7,6 +7,7 @@ fi
 source .venv/bin/activate
 python3 -m meury_app.dependency_setup core
 python3 -m PyInstaller --noconfirm --clean --windowed \
+  --additional-hooks-dir hooks \
   --hidden-import faiss \
   --hidden-import openai \
   --collect-all pypdfium2 \

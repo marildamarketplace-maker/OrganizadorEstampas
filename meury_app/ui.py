@@ -27,6 +27,8 @@ from .supabase_sync import sync_pending_records
 from .pending_sync import synchronize_pending
 from .filename_filter import normalize_ignored_filename_terms
 from .original_folder import OriginalFolderError, open_original_directory
+from .psd_compression_tab import CompressionTab
+from .manual_separation_tab import ManualSeparationTab
 from .semantic_search import (
     SemanticSearchIndex, merge_hybrid_results, record_identity,
     semantic_index_status,
@@ -153,20 +155,26 @@ class App:
         notebook.pack(fill="both", expand=True)
         organizer_tab, organizer_page, organizer_canvas = self._scrollable_page(notebook)
         collector_tab, collector_page, collector_canvas = self._scrollable_page(notebook)
+        compression_tab, compression_page, compression_canvas = self._scrollable_page(notebook)
         # A pesquisa avançada pertence ao outro sistema. Mantemos o painel
         # construído, mas fora do Notebook, para preservar compatibilidade com
         # configurações e permitir reativação futura sem migração.
         search_tab = ttk.Frame(notebook, padding=18)
         notebook.add(organizer_tab, text="Mapear estampas")
+        separation_tab, separation_page, separation_canvas = self._scrollable_page(notebook)
+        notebook.add(separation_tab, text="Separar estampas")
         notebook.add(collector_tab, text="Copiar imagens")
+        notebook.add(compression_tab, text="Compactação de PSDs")
 
         tab_canvases = {
             str(organizer_tab): organizer_canvas,
             str(collector_tab): collector_canvas,
+            str(separation_tab): separation_canvas,
+            str(compression_tab): compression_canvas,
         }
 
         def scroll_current_page(event):
-            if isinstance(event.widget, (tk.Text, tk.Listbox)):
+            if isinstance(event.widget, (tk.Text, tk.Listbox, ttk.Treeview)):
                 return
             canvas = tab_canvases.get(notebook.select())
             if canvas is None:
@@ -186,6 +194,27 @@ class App:
         self._build_organizer_tab(organizer_page)
         self._build_collector_tab(collector_page)
         self._build_search_tab(search_tab)
+        self.compression_tab = CompressionTab(compression_page, self)
+        self.manual_separation_tab = ManualSeparationTab(separation_page, self)
+        self.root.protocol("WM_DELETE_WINDOW", self._close_window)
+
+    def _close_window(self):
+        separation = getattr(self, "manual_separation_tab", None)
+        if separation is not None and separation.worker is not None and separation.worker.is_alive():
+            separation.cancel.set()
+            separation.status.set("Encerrando: finalizando a cópia atual...")
+            self.root.after(150, self._close_window)
+            return
+        tab = getattr(self, "compression_tab", None)
+        if tab is not None:
+            tab.closing = True
+            tab.cancel.set()
+            workers = [tab.worker, *tab.aux_workers]
+            if any(worker is not None and worker.is_alive() for worker in workers):
+                tab.status.set("Encerrando: aguardando cancelamento e limpeza...")
+                self.root.after(150, self._close_window)
+                return
+        self.root.destroy()
 
     def _scrollable_page(self, parent):
         container = ttk.Frame(parent)
@@ -1539,6 +1568,9 @@ class App:
             "semantic_search_enabled": self.semantic_enabled_var.get(),
             "ignored_filename_terms": list(self._ignored_filename_terms()),
         }
+        compression_tab = getattr(self, "compression_tab", None)
+        if compression_tab is not None:
+            updated_config.update(compression_tab.preferences())
         save_config(updated_config)
         # Todas as ações abertas nesta sessão passam a enxergar imediatamente a
         # mesma lista de pastas escolhida, sem exigir reinicialização.
@@ -2318,6 +2350,10 @@ class App:
         messagebox.showerror("Erro", message)
 
     def _set_busy(self, busy):
+        if getattr(self, "manual_separation_tab", None) is not None:
+            self.manual_separation_tab.set_busy(busy)
+        if getattr(self, "compression_tab", None) is not None:
+            self.compression_tab.set_busy(busy)
         state = "disabled" if busy else "normal"
         self.index_button.configure(state=state)
         self.incremental_index_button.configure(state=state)

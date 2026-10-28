@@ -34,6 +34,24 @@ jobs:
       - name: Validar índice com 195 mil arquivos em Windows
         run: python scripts/benchmark_index.py --count 195000 --output reports/index-benchmark-windows-195k.json
 
+      - name: Validar compactação PSD com 7-Zip real
+        shell: pwsh
+        run: |
+          $sevenZip = Join-Path $env:ProgramFiles "7-Zip\7z.exe"
+          if (-not (Test-Path $sevenZip)) { throw "7-Zip oficial não encontrado no runner; a integração PSD é obrigatória." }
+          $env:MEURY_7Z_PATH = $sevenZip
+          $env:MEURY_APP_DATA_PATH = Join-Path $env:RUNNER_TEMP "meury-psd-tests"
+          $env:MEURY_PSD_VALIDATION_REPORT = Join-Path $env:GITHUB_WORKSPACE "reports/psd-compression-windows.json"
+          python -m unittest discover -s tests -p "test_psd*.py"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Disponibilizar evidência PSD Windows
+        uses: actions/upload-artifact@v4
+        with:
+          name: psd-compression-windows
+          path: reports/psd-compression-windows.json
+          if-no-files-found: error
+
       - name: Disponibilizar medição do índice
         uses: actions/upload-artifact@v4
         with:
@@ -52,7 +70,7 @@ jobs:
           if-no-files-found: error
 
       - name: Gerar aplicativo
-        run: pyinstaller --noconfirm --clean --windowed --collect-all pypdfium2 --collect-all pypdfium2_raw --name "OrganizadorEstampasMeury" app.py
+        run: pyinstaller --noconfirm --clean --windowed --additional-hooks-dir hooks --collect-all pypdfium2 --collect-all pypdfium2_raw --name "OrganizadorEstampasMeury" app.py
 
       - name: Disponibilizar aplicativo
         uses: actions/upload-artifact@v4

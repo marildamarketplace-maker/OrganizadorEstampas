@@ -179,7 +179,127 @@ Saída:   saida/7751/7751-A.png
 Arquivos que já existirem no destino não são sobrescritos. Eles são ignorados e
 listados no log da aba ao final do processamento.
 
-## Pesquisar artes
+## Compactação de PSDs
+
+A aba **Compactação de PSDs** é independente do catálogo e da sincronização.
+Adicione várias pastas locais ou compartilhamentos já montados/autenticados pelo
+sistema operacional e configure a saída. A análise apenas consulta as origens;
+não cria compactados nem copia PSDs. A gravação efetiva na saída é conferida ao
+iniciar a compactação, pois permissões anunciadas pelo sistema podem mudar.
+
+- Nomes são **exatos**, ignorando somente caixa e a extensão opcional `.psd`.
+  Aceitam linhas, vírgulas e ponto e vírgula; acentos e códigos são preservados.
+- Datas opcionais usam `AAAA-MM-DD`, horário local e incluem o dia final inteiro.
+  Sem nomes, a tela indica **Busca ampla**, respeitando o período.
+- Confira a tabela, alterne a seleção por duplo clique ou botões e revise os
+  grupos de homônimos. Nomes iguais não significam conteúdo igual. Erros de
+  acesso tornam a análise **INCOMPLETA** e aparecem no resumo de confirmação.
+- Alterar origens, filtros ou saída exige nova análise. Somente arquivos
+  selecionados e confirmados são enviados ao mecanismo de compactação.
+
+Cada execução reserva uma subpasta exclusiva na saída. Concluída a operação,
+ela contém somente um `.7z` e seu `.txt` UTF-8 de mesmo nome-base. O log é
+atualizado durante o trabalho e permanece após falha/cancelamento. Se a limpeza
+não for possível, sua localização é informada. Após encerramento abrupto,
+temporários podem permanecer: o histórico marca a tentativa como interrompida.
+
+O arquivo usa **7z, LZMA2, nível normal (`-mx=5`), sólido desativado**. O programa
+executa uma prova de capacidade com essas opções antes de ler os PSDs reais.
+Cada arquivo é transmitido diretamente pela entrada padrão do 7-Zip, sem cópia
+intermediária do PSD e sem carregá-lo inteiro na memória. Caminhos internos têm
+o formato `origem-01/item-000001/caminho/relativo/arte.psd`: o identificador por
+arquivo evita também colisões de caixa/Unicode em componentes de diretório.
+Nomes incompatíveis com extração segura no Windows são informados como erros.
+
+**Dependência externa, instalada manualmente:** obtenha o 7-Zip oficial em
+https://www.7-zip.org/download.html. No Windows, instale o 7-Zip ou disponibilize
+o `7za.exe` standalone; `7z.exe` exige sua `7z.dll`. No macOS, extraia o pacote de
+console para a arquitetura adequada e mantenha a permissão de execução de `7zz`.
+Não use versões antigas de p7zip como substituição presumidamente compatível.
+O aplicativo não baixa nem instala executáveis durante esse fluxo.
+
+Configure, opcionalmente, no `.env` ou ambiente:
+
+```text
+# Windows (exemplo; ajuste à instalação)
+MEURY_7Z_PATH=C:/Program Files/7-Zip/7z.exe
+# macOS (use o caminho absoluto real do 7zz extraído)
+# MEURY_7Z_PATH=/caminho/absoluto/7zz
+```
+
+A resolução prioriza `MEURY_7Z_PATH`, depois o runtime empacotado e o PATH;
+no Windows também procura a instalação padrão em Program Files. Ausência ou
+incompatibilidade resulta em falha explícita, sem fallback para ZIP.
+
+Para **empacotar**, provisione manualmente `vendor/7zip/7zz` (macOS),
+`vendor/7zip/7za.exe` ou `vendor/7zip/7z.exe` com `7z.dll` (Windows), acompanhados
+dos arquivos de licença oficiais `.txt`. Use apenas binários da plataforma e
+arquitetura do build, confira sua procedência/integridade e as obrigações de
+redistribuição. Os scripts de build usam `hooks/hook-meury_app.sevenzip.py`
+para incluí-los. Ao usar um spec próprio, configure `hookspath=['hooks']`.
+Sem essa pasta de binários, o build continua dependendo de instalação externa.
+O hook inclui somente executáveis do sistema do build (`7zz` no macOS;
+`7za.exe`/`7z.exe` no Windows) e rejeita uma pasta contendo apenas o runtime do
+outro sistema. Confirme separadamente a arquitetura (Intel/Apple Silicon/x64/ARM).
+Os specs de auditoria antigos não são canais de distribuição dessa funcionalidade.
+Assinatura/notarização e permissões do macOS precisam ser verificadas no pacote final.
+
+O teste nativo `7z t`, o inventário e os tamanhos são conferidos antes de publicar
+o nome final; o modo não sólido e o método real também são verificados. Tamanho
+e modificação dos originais são comparados antes/depois e ao final. Isso **não é
+comparação criptográfica nem snapshot**: mantenha os PSDs fechados durante o
+trabalho. Alterações detectadas impedem a conclusão. O histórico reutiliza tabelas
+próprias no SQLite operacional existente, com estados e manifesto consultáveis.
+Mantenha a pasta de dados do aplicativo em disco local; SQLite em rede não é
+uma configuração validada. Origens e saída podem estar na rede.
+
+**Limites operacionais:** a inclusão por fluxo exige uma atualização do 7z por
+arquivo; lotes muito grandes podem ser lentos e as atualizações podem reescrever
+o contêiner, exigindo espaço temporário adicional. A análise e a tabela mantêm
+metadados em memória, mas não os bytes dos PSDs. Durante um único arquivo grande,
+o contador só avança quando ele termina; não se inventa um percentual interno.
+Cancelamento aguarda o processo e tenta limpar temporários. Uma chamada de rede
+bloqueada pelo SO pode atrasar essa conclusão. A preservação dos originais pode
+permitir atualizações normais de horário de acesso pelo próprio filesystem.
+Manter originais e 7z **aumenta** a ocupação total; não há liberação automática.
+Não há transação atômica conjunta entre arquivo, TXT e SQLite: interrupções na
+publicação são registradas como interrompidas e devem ser conferidas no histórico.
+A publicação recusa sobrescrita de um resultado existente. No macOS usa a
+renomeação exclusiva do sistema; compartilhamentos que não suportem essa operação
+retornam falha explícita. O histórico distingue arquivos processados no temporário
+de arquivos efetivamente publicados; falhas não apresentam economia de espaço.
+Consultas do histórico, recuperação e abertura de localizações rodam fora da
+thread gráfica. A tabela principal é preenchida em lotes para permitir eventos.
+O cabeçalho 7z permite conferir contêiner, método, blocos e modo sólido, mas não
+armazena o preset de nível normal: `-mx=5` é conferido nos argumentos do processo.
+
+Integração real opcional nos testes (pula com motivo se não houver mecanismo):
+
+```sh
+MEURY_7Z_PATH=/caminho/absoluto/7zz python -m unittest discover -s tests -p test_psd_compression.py -v
+MEURY_7Z_PATH=/caminho/absoluto/7zz python -m unittest discover -s tests -p test_psd_review.py -v
+# Teste nativo automatizado da janela, somente em sessão gráfica:
+MEURY_TEST_TK=1 MEURY_7Z_PATH=/caminho/absoluto/7zz python -m unittest discover -s tests -p test_psd_tk.py -v
+```
+
+O teste extrai PSDs sintéticos em pasta temporária e compara seus bytes. Falta
+de espaço, queda de rede e falhas de limpeza são simuladas; não representam
+validação de compartilhamentos reais. Windows, UNC, junctions, Gatekeeper e
+latência/desconexão em rede exigem validação nos ambientes de destino.
+O teste `test_psd_review.py` também compara SHA-256 de todas as extrações
+selecionadas, verifica originais não selecionados, manifesto, TXT, SQLite e o
+encerramento de processos reais no cancelamento. Defina opcionalmente
+`MEURY_PSD_VALIDATION_REPORT=/caminho/relatorio.json` para salvar a evidência dessa
+integração. A verificação criptográfica pertence ao teste; a funcionalidade usa
+teste de integridade nativo e conferência de tamanho/modificação.
+`test_psd_platforms.py` cobre contratos de descoberta por sistema, flags de
+processo Windows, listagem CRLF/caminhos com barras invertidas e seleção do runtime
+no hook. São simulações quando executados fora do Windows. Há ainda testes
+exclusivos Windows para ciclos por junction e publicação sem sobrescrita.
+O workflow Windows exige 7-Zip real em Program Files e publica a evidência PSD;
+essa configuração de CI não equivale a um resultado aprovado até o job executar.
+
+### Pesquisa de artes legada
 
 A aba **Pesquisar Artes** consulta nome, caminho, descrição, palavras-chave, cores,
 elementos, temas e categoria. A busca ignora acentos e aceita aproximações simples,

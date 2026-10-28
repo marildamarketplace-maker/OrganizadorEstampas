@@ -20,6 +20,7 @@ if not exist "%VENV_PY%" (
 "%VENV_PY%" -m meury_app.dependency_setup core
 if errorlevel 1 goto :erro
 "%VENV_PY%" -m PyInstaller --noconfirm --clean --windowed ^
+    --additional-hooks-dir hooks ^
     --hidden-import faiss ^
     --hidden-import openai ^
     --collect-all pypdfium2 ^

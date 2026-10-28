@@ -1,0 +1,164 @@
+{
+  "platform": "macOS-26.3-arm64-arm-64bit-Mach-O",
+  "mechanism": "7-Zip (z) 26.05 (arm64) : Copyright (c) 1999-2026 Igor Pavlov : 2026-10-21",
+  "inspection": {
+    "Type": "7z",
+    "Method": "LZMA2:384k",
+    "Solid": "-",
+    "Blocks": "3",
+    "entries": 4,
+    "level": "-mx=5 solicitado ao processo; o preset não é armazenado no cabeçalho 7z"
+  },
+  "originals_checked": 5,
+  "included": 4,
+  "sha256_comparisons": [
+    {
+      "original": "origem com espaços/outra pasta/arte.psd",
+      "internal": "origem-01/item-000001/outra pasta/arte.psd",
+      "original_sha256": "f24cec02e01b3bcfebe9dc5c1862ba40390a560176662d93100d082b445a9c50",
+      "extracted_sha256": "f24cec02e01b3bcfebe9dc5c1862ba40390a560176662d93100d082b445a9c50"
+    },
+    {
+      "original": "origem com espaços/sub pasta/árvore.PSD",
+      "internal": "origem-01/item-000002/sub pasta/árvore.PSD",
+      "original_sha256": "1236485d7ee9e69afa4e2f4ba01ef3d0fe682e1b116dc1db3117057fc9d9e2c2",
+      "extracted_sha256": "1236485d7ee9e69afa4e2f4ba01ef3d0fe682e1b116dc1db3117057fc9d9e2c2"
+    },
+    {
+      "original": "origem com espaços/sub pasta/vazio.psd",
+      "internal": "origem-01/item-000003/sub pasta/vazio.psd",
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "extracted_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "original": "segunda origem Ω/sub Unicode/ARTE.PSD",
+      "internal": "origem-02/item-000004/sub Unicode/ARTE.PSD",
+      "original_sha256": "88b6962e59ccbb014e993235629f16c654f8d908e9995308a414149da286696b",
+      "extracted_sha256": "88b6962e59ccbb014e993235629f16c654f8d908e9995308a414149da286696b"
+    }
+  ],
+  "originals_unchanged": true,
+  "manifest_log_history_consistent": true,
+  "no_loose_psds": true,
+  "all_children_reaped": true,
+  "test_data": "synthetic files, temporary directories removed after test",
+  "compression_argv": [
+    [
+      "a",
+      "-t7z",
+      "-m0=LZMA2",
+      "-mx=5",
+      "-ms=off",
+      "-bd",
+      "-y",
+      "-scsUTF-8",
+      "-sccUTF-8",
+      "-siorigem-01/teste.psd",
+      "/var/folders/zd/sqf73_d171bdyr3zrkdqtvm00000gn/T/meury-7z-probe-7xyof139/probe.7z"
+    ],
+    [
+      "a",
+      "-t7z",
+      "-m0=LZMA2",
+      "-mx=5",
+      "-ms=off",
+      "-bd",
+      "-y",
+      "-scsUTF-8",
+      "-sccUTF-8",
+      "-siorigem-01/item-000001/outra pasta/arte.psd",
+      "/private/var/folders/zd/sqf73_d171bdyr3zrkdqtvm00000gn/T/tmp4tqy7teg/origem com espaços/saida de compactação/compactacao_20261028_083122_5495924c91da/.incompleto-8ir_1uha.7z"
+    ],
+    [
+      "a",
+      "-t7z",
+      "-m0=LZMA2",
+      "-mx=5",
+      "-ms=off",
+      "-bd",
+      "-y",
+      "-scsUTF-8",
+      "-sccUTF-8",
+      "-siorigem-01/item-000002/sub pasta/árvore.PSD",
+      "/private/var/folders/zd/sqf73_d171bdyr3zrkdqtvm00000gn/T/tmp4tqy7teg/origem com espaços/saida de compactação/compactacao_20261028_083122_5495924c91da/.incompleto-8ir_1uha.7z"
+    ],
+    [
+      "a",
+      "-t7z",
+      "-m0=LZMA2",
+      "-mx=5",
+      "-ms=off",
+      "-bd",
+      "-y",
+      "-scsUTF-8",
+      "-sccUTF-8",
+      "-siorigem-01/item-000003/sub pasta/vazio.psd",
+      "/private/var/folders/zd/sqf73_d171bdyr3zrkdqtvm00000gn/T/tmp4tqy7teg/origem com espaços/saida de compactação/compactacao_20261028_083122_5495924c91da/.incompleto-8ir_1uha.7z"
+    ],
+    [
+      "a",
+      "-t7z",
+      "-m0=LZMA2",
+      "-mx=5",
+      "-ms=off",
+      "-bd",
+      "-y",
+      "-scsUTF-8",
+      "-sccUTF-8",
+      "-siorigem-02/item-000004/sub Unicode/ARTE.PSD",
+      "/private/var/folders/zd/sqf73_d171bdyr3zrkdqtvm00000gn/T/tmp4tqy7teg/origem com espaços/saida de compactação/compactacao_20261028_083122_5495924c91da/.incompleto-8ir_1uha.7z"
+    ]
+  ],
+  "reviewed_at": "2026-10-28T08:33:52.117226-03:00",
+  "suite": {
+    "total": 308,
+    "passed": 299,
+    "skipped": 9,
+    "failures": 0,
+    "errors": 0,
+    "skipped_reasons": {
+      "native_windows": 7,
+      "opt_in_tk": 2
+    }
+  },
+  "native_tk_separate_run": {
+    "passed": 2,
+    "failures": 0,
+    "platform": "macOS arm64",
+    "mode": "automated hidden native window"
+  },
+  "packaging": {
+    "minimal_pyinstaller_build": "passed",
+    "bundled_7zz_execution": "passed",
+    "full_release_app_tested": false,
+    "windows_build_executed": false
+  },
+  "fixes": [
+    "Platform-specific bundled runtime and PATH executable names",
+    "Hook rejects foreign-only runtimes and requires 7z.dll for Windows 7z.exe",
+    "Windows-safe reserved and noncanonical internal path validation; invalid UTF-8 rejected",
+    "OSError date conversion handled",
+    "Existing hook regression made compatible with Windows",
+    "Windows CI requires real 7-Zip integration and emits SHA-256 evidence"
+  ],
+  "simulated_platform_contracts": [
+    "Windows process creation flags",
+    "Windows Program Files discovery",
+    "CRLF/backslash listing",
+    "Windows opening/publication dispatch",
+    "Windows runtime/DLL bundling"
+  ],
+  "pending_native_validation": [
+    "Windows suite, real junctions, native rename and real 7-Zip CI job not executed here",
+    "UNC/SMB, disconnections, permissions and long paths",
+    "macOS Intel, Gatekeeper, Finder and complete signed/notarized release",
+    "Large real PSD batches and Photoshop file locks"
+  ],
+  "manual_checks_performed": [],
+  "notes": [
+    "CI configuration is not a successful remote job result",
+    "Production validation is native integrity plus size/mtime, not a filesystem snapshot",
+    "-mx=5 is verified in real subprocess arguments; preset is not serialized in archive header",
+    "Minimal packaging test is not acceptance of the full distributed application"
+  ]
+}

@@ -43,6 +43,200 @@ DEFAULT_CODEX_MODEL_DISCOVERY_TIMEOUT_SECONDS = 30
 DEFAULT_CODEX_TIMEOUT_SECONDS = 600
 DEFAULT_OPENAI_TIMEOUT_SECONDS = 300
 MAX_API_PDF_BYTES = 50 * 1024 * 1024
+TERMINAL_WIDTH = 72
+_TERMINAL_COLORS = False
+
+
+class AutoScrollOutput:
+    """Mantém a área visível do console acompanhando o cursor de saída."""
+
+    def __init__(self, stream: Any, scroll: Callable[[], None]) -> None:
+        self._stream = stream
+        self._scroll = scroll
+        self._order_auto_scroll = True
+
+    def write(self, text: str) -> int:
+        written = self._stream.write(text)
+        self._stream.flush()
+        self._scroll()
+        return written
+
+    def flush(self) -> None:
+        self._stream.flush()
+        self._scroll()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._stream, name)
+
+
+def enable_windows_auto_scroll(handle: Any) -> None:
+    """Faz a janela atual seguir a última linha impressa no console do Windows."""
+    if os.name != "nt" or getattr(sys.stdout, "_order_auto_scroll", False):
+        return
+    try:
+        import ctypes
+
+        class Coord(ctypes.Structure):
+            _fields_ = [("X", ctypes.c_short), ("Y", ctypes.c_short)]
+
+        class SmallRect(ctypes.Structure):
+            _fields_ = [
+                ("Left", ctypes.c_short),
+                ("Top", ctypes.c_short),
+                ("Right", ctypes.c_short),
+                ("Bottom", ctypes.c_short),
+            ]
+
+        class ConsoleScreenBufferInfo(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", Coord),
+                ("dwCursorPosition", Coord),
+                ("wAttributes", ctypes.c_ushort),
+                ("srWindow", SmallRect),
+                ("dwMaximumWindowSize", Coord),
+            ]
+
+        kernel32 = ctypes.windll.kernel32
+
+        def scroll_to_cursor() -> None:
+            info = ConsoleScreenBufferInfo()
+            if not kernel32.GetConsoleScreenBufferInfo(handle, ctypes.byref(info)):
+                return
+            height = info.srWindow.Bottom - info.srWindow.Top + 1
+            top = max(0, info.dwCursorPosition.Y - height + 1)
+            window = SmallRect(
+                info.srWindow.Left,
+                top,
+                info.srWindow.Right,
+                top + height - 1,
+            )
+            kernel32.SetConsoleWindowInfo(handle, True, ctypes.byref(window))
+
+        sys.stdout = AutoScrollOutput(sys.stdout, scroll_to_cursor)
+    except (AttributeError, OSError, TypeError):
+        pass
+
+
+def configure_windows_console_font(handle: Any) -> None:
+    """Usa uma fonte TrueType legível somente na janela atual do console."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+
+        class Coord(ctypes.Structure):
+            _fields_ = [("X", ctypes.c_short), ("Y", ctypes.c_short)]
+
+        class ConsoleFontInfoEx(ctypes.Structure):
+            _fields_ = [
+                ("cbSize", ctypes.c_ulong),
+                ("nFont", ctypes.c_ulong),
+                ("dwFontSize", Coord),
+                ("FontFamily", ctypes.c_uint),
+                ("FontWeight", ctypes.c_uint),
+                ("FaceName", ctypes.c_wchar * 32),
+            ]
+
+        raw_size = os.environ.get("ORDER_CONSOLE_FONT_SIZE", "20").strip()
+        try:
+            font_size = min(32, max(16, int(raw_size)))
+        except ValueError:
+            font_size = 20
+        font = ConsoleFontInfoEx()
+        font.cbSize = ctypes.sizeof(ConsoleFontInfoEx)
+        font.dwFontSize = Coord(0, font_size)
+        font.FontFamily = 54  # FF_MODERN | TMPF_TRUETYPE
+        font.FontWeight = 400
+        font.FaceName = "Consolas"
+        ctypes.windll.kernel32.SetCurrentConsoleFontEx(
+            handle, False, ctypes.byref(font),
+        )
+    except (AttributeError, OSError, TypeError):
+        # Consoles modernos ou redirecionados podem não oferecer essa API.
+        pass
+
+
+def configure_terminal_style() -> None:
+    """Ativa cores somente em um terminal interativo que consiga exibi-las."""
+    global _TERMINAL_COLORS
+    _TERMINAL_COLORS = False
+    if os.environ.get("NO_COLOR") is not None or not sys.stdout.isatty():
+        return
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+            mode = ctypes.c_uint()
+            if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+                return
+            configure_windows_console_font(handle)
+            enable_windows_auto_scroll(handle)
+            if not kernel32.SetConsoleMode(handle, mode.value | 0x0004):
+                return
+        except (AttributeError, OSError):
+            return
+    _TERMINAL_COLORS = True
+
+
+def terminal_text(text: str, *, color: str = "", bold: bool = False) -> str:
+    if not _TERMINAL_COLORS:
+        return text
+    colors = {
+        "blue": "36",
+        "green": "32",
+        "yellow": "33",
+        "red": "31",
+        "muted": "90",
+    }
+    codes = (["1"] if bold else []) + ([colors[color]] if color else [])
+    return f"\033[{';'.join(codes)}m{text}\033[0m" if codes else text
+
+
+def terminal_rule(character: str = "=") -> None:
+    print(terminal_text(character * TERMINAL_WIDTH, color="blue", bold=True))
+
+
+def print_terminal_header(input_dir: Path) -> None:
+    print()
+    terminal_rule()
+    print(terminal_text(
+        "PROCESSAMENTO DE PEDIDOS".center(TERMINAL_WIDTH),
+        color="blue",
+        bold=True,
+    ))
+    terminal_rule()
+    print(terminal_text("Pasta de entrada:", color="muted"))
+    print(f"  {input_dir}")
+    print()
+
+
+def print_terminal_final_log(content: str) -> None:
+    """Exibe o relatório com hierarquia visual, sem alterar o arquivo salvo."""
+    print()
+    terminal_rule()
+    for line in content.rstrip().splitlines():
+        stripped = line.strip()
+        if stripped == "RESUMO DOS PEDIDOS":
+            print(terminal_text(
+                stripped.center(TERMINAL_WIDTH), color="blue", bold=True,
+            ))
+        elif stripped == "O QUE PRECISA SER FEITO":
+            print(terminal_text(stripped, color="yellow", bold=True))
+        elif stripped.startswith("Tudo certo") or stripped.startswith("Sem pendências:"):
+            print(terminal_text(
+                line, color="green", bold=stripped.startswith("Tudo certo"),
+            ))
+        elif stripped.startswith("PDFs:"):
+            print(terminal_text(line, bold=True))
+        elif stripped.startswith("-"):
+            print(terminal_text(line, color="yellow"))
+        elif stripped.startswith("Detalhes técnicos:"):
+            print(terminal_text(line, color="muted"))
+        else:
+            print(line)
+    terminal_rule()
 
 
 def parse_args() -> argparse.Namespace:
@@ -72,9 +266,12 @@ def choose_index_update(value: bool | None) -> bool:
         return value
     while True:
         try:
-            answer = input(
-                "Deseja sincronizar/atualizar o índice antes de separar as imagens? [S/N]: "
-            ).strip().casefold()
+            prompt = terminal_text(
+                "Atualizar o índice antes de separar as imagens? [S/N]: ",
+                color="yellow",
+                bold=True,
+            )
+            answer = input(prompt).strip().casefold()
         except EOFError as exc:
             raise ValueError(
                 "Não foi possível ler a escolha do índice. Execute com "
@@ -84,7 +281,10 @@ def choose_index_update(value: bool | None) -> bool:
             return True
         if answer in {"n", "nao", "não"}:
             return False
-        print("Responda S para atualizar ou N para usar o índice salvo.", flush=True)
+        print(terminal_text(
+            "  Responda S para atualizar ou N para usar o índice salvo.",
+            color="yellow",
+        ), flush=True)
 
 
 def positive_timeout(environment_name: str, default: int) -> int:
@@ -920,8 +1120,11 @@ def write_final_action_log(
 
 def print_result_details(result: Dict[str, Any]) -> None:
     """Mostra no terminal o mesmo resultado relevante salvo no relatório JSON."""
-    print(f"  Pedido: {result.get('pedido') or '(não identificado)'}")
-    print(f"  Resultado: {result.get('resultadoFinal', 'FALHA')}")
+    outcome = str(result.get("resultadoFinal", "FALHA"))
+    outcome_color = "green" if outcome == "SUCESSO" else "red"
+    order = str(result.get("pedido") or "(não identificado)")
+    print(f"  Pedido: {terminal_text(order, bold=True)}")
+    print(f"  Resultado: {terminal_text(outcome, color=outcome_color, bold=True)}")
     print(f"  Pasta criada: {result.get('pastaCriada') or '(nenhuma)'}")
     print(f"  Quantidade copiada: {result.get('quantidadeCopiada', 0)}")
 
@@ -944,16 +1147,20 @@ def main() -> int:
     started_at = time.monotonic()
     load_local_environment()
     args = parse_args()
+    project = Path(args.projeto).resolve()
+    input_dir = project / "pedidos_pdf" / "entrada"
+    configure_terminal_style()
+    print_terminal_header(input_dir)
     try:
         update_index = choose_index_update(args.atualizar_indice)
     except ValueError as exc:
         print(f"[indice] ERRO: {exc}", flush=True)
         return 1
     if not update_index:
-        print("[indice] Atualização dispensada. O lote usará somente o índice salvo.", flush=True)
-    project = Path(args.projeto).resolve()
+        print(terminal_text(
+            "[ÍNDICE] Usando o índice salvo, sem atualização.", color="blue",
+        ), flush=True)
     codex = Path(args.codex).resolve() if str(args.codex).strip() else None
-    input_dir = project / "pedidos_pdf" / "entrada"
     completed_dir = input_dir / "concluido"
     reports_dir = project / "pedidos_pdf" / "relatorios"
     control_dir = project / "pedidos_pdf" / ".controle"
@@ -977,9 +1184,6 @@ def main() -> int:
         key=lambda path: path.name.casefold(),
     )
     pdf_digests = {pdf_path: file_hash(pdf_path) for pdf_path in pdfs}
-    has_pending_pdfs = any(
-        digest not in successful_records for digest in pdf_digests.values()
-    )
     success_rows: List[Dict[str, Any]] = []
     failure_rows: List[Dict[str, Any]] = []
     skipped_rows: List[Dict[str, Any]] = []
@@ -987,12 +1191,14 @@ def main() -> int:
     order_context: tuple[Path, dict[str, list[str]]] | None = None
 
     try:
-        if not has_pending_pdfs:
+        if not pdfs:
             if update_index:
                 ensure_daily_index()
-            if not pdfs:
-                print(f"Nenhum PDF encontrado em: {input_dir}")
+            print(f"Nenhum PDF encontrado em: {input_dir}")
         else:
+            # Mesmo PDFs concluídos precisam passar novamente pela criação do pedido.
+            # A extração salva continua sendo reutilizada, mas a pasta de saída pode
+            # ter sido removida e deve ser recomposta ao executar um novo lote.
             order_context = load_order_context(update_index=update_index)
     except (OSError, RuntimeError, ValueError) as exc:
         print(
@@ -1005,37 +1211,17 @@ def main() -> int:
     for position, pdf_path in enumerate(pdfs, start=1):
         digest = pdf_digests[pdf_path]
         print("")
-        print(f"[{position}/{len(pdfs)}] Processando: {pdf_path.name}", flush=True)
+        print(terminal_text("-" * TERMINAL_WIDTH, color="blue"))
+        print(terminal_text(
+            f"PEDIDO {position} DE {len(pdfs)}", color="blue", bold=True,
+        ))
+        print(f"  Arquivo: {pdf_path.name}", flush=True)
         if digest in successful_records:
-            previous = successful_records[digest]
-            row = {
-                "arquivo": pdf_path.name,
-                "pedido": previous.get("pedido", ""),
-                "resultado": "JÁ PROCESSADO",
-                "dataProcessamento": previous.get("dataProcessamento", ""),
-                "sha256": digest,
-                "detalhes": (
-                    "Mesmo conteúdo de um PDF concluído anteriormente. "
-                    f"Nome registrado: {previous.get('arquivo', '')}"
-                ),
-                "validacoes": [],
-                "acoes": [],
-            }
-            print("  Resultado: JÁ PROCESSADO")
-            print(f"  Pedido: {previous.get('pedido') or '(não identificado)'}")
-            try:
-                completed_path = move_to_completed(pdf_path, completed_dir)
-                print(f"  PDF movido para: {completed_path}")
-            except OSError as exc:
-                print(f"  AVISO: não foi possível mover o PDF concluído: {exc}")
-                row["validacoes"] = [f"PDF não foi movido para concluído: {exc}"]
-                row["acoes"] = [
-                    "Mover manualmente o PDF para a pasta 'concluido' e verificar "
-                    "permissões ou bloqueios no arquivo."
-                ]
-            skipped_rows.append(row)
-            processed_rows.append(row)
-            continue
+            print(
+                "  Pedido concluído anteriormente; recriando a pasta com a "
+                "extração salva.",
+                flush=True,
+            )
 
         report_base = f"{position:03d}_{safe_report_name(pdf_path)}"
         final_path = run_dir / f"{report_base}.json"
@@ -1204,9 +1390,12 @@ def main() -> int:
         run_dir=run_dir,
         generated_at=now_iso(),
     )
-    print("\n" + final_log, end="")
-    print(f"Tempo total: {minutes} min {seconds:02d} s")
-    print(f"ARQUIVO DO LOG FINAL: {final_log_path}")
+    print_terminal_final_log(final_log)
+    print(terminal_text(
+        f"Tempo total: {minutes:02d}:{seconds:02d}", color="blue", bold=True,
+    ))
+    print(terminal_text("Relatório completo:", color="muted"))
+    print(f"  {final_log_path}")
     return 1 if any(row.get("validacoes") for row in processed_rows) else 0
 
 

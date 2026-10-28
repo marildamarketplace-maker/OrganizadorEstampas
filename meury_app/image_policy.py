@@ -5,9 +5,9 @@ from __future__ import annotations
 
 # O Pillow emite um aviso acima de MAX_IMAGE_PIXELS e lança
 # DecompressionBombError acima do dobro desse valor. Artes de impressão com
-# cerca de 100 MP são esperadas neste catálogo, então aceitamos até 150 MP sem
-# aviso e ainda bloqueamos imagens acima de 300 MP.
-MAX_IMAGE_PIXELS = 150_000_000
+# até cerca de 595 MP são esperadas neste catálogo, então aceitamos até
+# 594.816.000 pixels sem aviso e ainda bloqueamos imagens acima de 1.189.632.000.
+MAX_IMAGE_PIXELS = 594_816_000
 
 
 def configure_pillow_limits() -> None:

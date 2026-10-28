@@ -533,12 +533,20 @@ quando não há lote ativo. Se outro lote deste projeto estiver rodando, o inici
 pergunta se deseja encerrá-lo e reiniciar. Responda `S` para encerrar também os processos
 filhos do lote e começar novamente, ou `N` para manter a execução anterior. Para reiniciar
 diretamente, use `pedidos_pdf\processar_pedidos_lote_windows.bat --reiniciar`.
-Pedidos já concluídos continuam reconhecidos pelo histórico; os pendentes são retomados.
+Pedidos já concluídos continuam reconhecidos pelo histórico. Ao colocar novamente o
+mesmo PDF na entrada, a extração salva é reaproveitada e a pasta do pedido é criada
+novamente; os pendentes também são retomados.
 
 Antes dos PDFs, o lote pergunta se deseja sincronizar/atualizar o índice. Responda
 `N` para carregar o índice já salvo e seguir direto para a separação das imagens,
 sem varrer as pastas de estampas. Caso ainda não exista um índice salvo compatível,
 o lote informa que é necessário executá-lo novamente e responder `S`.
+
+No Windows, a janela do lote usa a fonte vetorial Consolas para manter as letras
+nítidas mesmo em tamanho maior. O tamanho padrão é 20; opcionalmente, defina a
+variável `ORDER_CONSOLE_FONT_SIZE` entre 16 e 32 antes de iniciar o lote.
+A visualização também acompanha automaticamente as novas mensagens, mantendo a
+última linha impressa visível durante o processamento.
 
 Respondendo `S`, o lote verifica se **Atualizar índice** já terminou com sucesso
 no dia atual para as mesmas pastas configuradas. Se ainda não terminou, executa o
@@ -548,7 +556,8 @@ processador Python sem a pergunta, use `--sem-atualizar-indice` ou `--atualizar-
 
 Cada PDF novo recebe uma execução isolada do prompt. O controle usa o conteúdo do
 arquivo, e não apenas o nome: um PDF concluído continua sendo reconhecido se for
-renomeado. Os relatórios do lote separam sucessos, falhas e arquivos já processados.
+renomeado. Nesse caso, o prompt não é executado outra vez, mas a criação da pasta e a
+cópia das estampas são repetidas. Os relatórios do lote separam sucessos e falhas.
 O `LOG_FINAL_ACAO_HUMANA.txt` traz um resumo curto: por PDF, lista as estampas a
 localizar e as duplicidades a resolver, seguido da orientação para executar novamente.
 Os detalhes técnicos ficam nos arquivos individuais `.json` e `.log`.

@@ -29,6 +29,7 @@ from .filename_filter import normalize_ignored_filename_terms
 from .original_folder import OriginalFolderError, open_original_directory
 from .psd_compression_tab import CompressionTab
 from .manual_separation_tab import ManualSeparationTab
+from .existence_checker_tab import ExistenceCheckerTab
 from .semantic_search import (
     SemanticSearchIndex, merge_hybrid_results, record_identity,
     semantic_index_status,
@@ -163,6 +164,8 @@ class App:
         notebook.add(organizer_tab, text="Mapear estampas")
         separation_tab, separation_page, separation_canvas = self._scrollable_page(notebook)
         notebook.add(separation_tab, text="Separar estampas")
+        existence_tab, existence_page, existence_canvas = self._scrollable_page(notebook)
+        notebook.add(existence_tab, text="Verificador de existência")
         notebook.add(collector_tab, text="Copiar imagens")
         notebook.add(compression_tab, text="Compactação de PSDs")
 
@@ -170,6 +173,7 @@ class App:
             str(organizer_tab): organizer_canvas,
             str(collector_tab): collector_canvas,
             str(separation_tab): separation_canvas,
+            str(existence_tab): existence_canvas,
             str(compression_tab): compression_canvas,
         }
 
@@ -196,9 +200,13 @@ class App:
         self._build_search_tab(search_tab)
         self.compression_tab = CompressionTab(compression_page, self)
         self.manual_separation_tab = ManualSeparationTab(separation_page, self)
+        self.existence_checker_tab = ExistenceCheckerTab(existence_page, self)
         self.root.protocol("WM_DELETE_WINDOW", self._close_window)
 
     def _close_window(self):
+        checker = getattr(self, "existence_checker_tab", None)
+        if checker is not None:
+            checker.cancel.set()
         separation = getattr(self, "manual_separation_tab", None)
         if separation is not None and separation.worker is not None and separation.worker.is_alive():
             separation.cancel.set()

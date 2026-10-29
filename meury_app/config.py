@@ -8,7 +8,7 @@ import os
 import shutil
 import sqlite3
 
-APP_NAME = "Organizador de Estampas - Meury Shop"
+APP_NAME = "MV Image"
 DEFAULT_APP_DIR = Path.home() / ".meury_organizador_estampas"
 APP_DIR_LOCATION_FILE = DEFAULT_APP_DIR / "data_location.json"
 

@@ -1,4 +1,4 @@
-# Organizador de Estampas — Meury Shop
+# MV Image
 
 ## Fluxo atual do indexador e sincronizador
 
@@ -631,36 +631,34 @@ python3 app.py
 Também é possível gerar e baixar o aplicativo automaticamente pela página
 [GitHub Actions — Gerar aplicativo Windows](https://github.com/marildamarketplace-maker/OrganizadorEstampas/actions/workflows/build-windows.yml).
 
-Abra a execução mais recente e baixe o artefato `OrganizadorEstampas-Windows`.
+Abra a execução mais recente e baixe o artefato `MV-Image-Windows`.
 
 A geração do `.exe` deve ser feita em um computador Windows.
 
 ```bat
-.venv\Scripts\activate
-pyinstaller --noconfirm --clean --windowed --name "OrganizadorEstampasMeury" app.py
+build_windows.bat
 ```
 
 O programa ficará em:
 
 ```text
-dist\OrganizadorEstampasMeury\OrganizadorEstampasMeury.exe
+dist\MV Image\MV Image.exe
 ```
 
-Para distribuir, compacte e envie a pasta inteira `dist\OrganizadorEstampasMeury`.
+Para distribuir, compacte e envie a pasta inteira `dist\MV Image`.
 
 ## Gerar aplicativo para macOS
 
 A geração do `.app` deve ser feita em um Mac.
 
 ```bash
-source .venv/bin/activate
-pyinstaller --noconfirm --clean --windowed --name "OrganizadorEstampasMeury" app.py
+bash build_macos.sh
 ```
 
 O aplicativo ficará em:
 
 ```text
-dist/OrganizadorEstampasMeury.app
+dist/MV Image.app
 ```
 
 Na primeira abertura, o macOS pode bloquear o app por não estar assinado. Acesse:

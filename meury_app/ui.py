@@ -7,6 +7,10 @@ import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
+from .order_batch_tab import OrderBatchTab
+from .user_management_tab import UserManagementTab
+from .app_icon import apply_app_icon
+from .user_store import pode_acessar_aba
 from .art_search import ArtSearchEngine, SearchResult, ThumbnailCache, principal_keywords
 from .config import (
     APP_DIR, APP_NAME, load_config, save_config,
@@ -40,8 +44,12 @@ from .visual_search import (
 
 
 class App:
-    def __init__(self):
-        self.root = tk.Tk()
+    def __init__(self, *, usuario_atual=None, root=None):
+        self.usuario_atual = usuario_atual
+        self.root = root if root is not None else tk.Tk()
+        if root is None:
+            apply_app_icon(self.root)
+        self.root.resizable(True, True)
         self.root.title(APP_NAME)
         self.root.geometry("960x840")
         self.root.minsize(640, 480)
@@ -161,13 +169,13 @@ class App:
         # construído, mas fora do Notebook, para preservar compatibilidade com
         # configurações e permitir reativação futura sem migração.
         search_tab = ttk.Frame(notebook, padding=18)
-        notebook.add(organizer_tab, text="Mapear estampas")
+        self._add_authorized_tab(notebook, organizer_tab, "mapear_estampas", "Mapear estampas")
         separation_tab, separation_page, separation_canvas = self._scrollable_page(notebook)
-        notebook.add(separation_tab, text="Separar estampas")
+        self._add_authorized_tab(notebook, separation_tab, "separar_estampas", "Separar estampas")
         existence_tab, existence_page, existence_canvas = self._scrollable_page(notebook)
-        notebook.add(existence_tab, text="Verificador de existência")
-        notebook.add(collector_tab, text="Copiar imagens")
-        notebook.add(compression_tab, text="Compactação de PSDs")
+        self._add_authorized_tab(notebook, existence_tab, "verificar_existencia", "Verificador de existência")
+        self._add_authorized_tab(notebook, collector_tab, "copiar_imagens", "Copiar imagens")
+        self._add_authorized_tab(notebook, compression_tab, "compactar_psds", "Compactação de PSDs")
 
         tab_canvases = {
             str(organizer_tab): organizer_canvas,
@@ -198,12 +206,42 @@ class App:
         self._build_organizer_tab(organizer_page)
         self._build_collector_tab(collector_page)
         self._build_search_tab(search_tab)
-        self.compression_tab = CompressionTab(compression_page, self)
-        self.manual_separation_tab = ManualSeparationTab(separation_page, self)
-        self.existence_checker_tab = ExistenceCheckerTab(existence_page, self)
+        if pode_acessar_aba(self.usuario_atual, 'compactar_psds'):
+            self.compression_tab = CompressionTab(compression_page, self)
+        if pode_acessar_aba(self.usuario_atual, 'separar_estampas'):
+            self.manual_separation_tab = ManualSeparationTab(separation_page, self)
+        if pode_acessar_aba(self.usuario_atual, 'verificar_existencia'):
+            self.existence_checker_tab = ExistenceCheckerTab(existence_page, self)
+        if pode_acessar_aba(self.usuario_atual, 'separar_pedidos'):
+            batch_tab, batch_page, batch_canvas = self._scrollable_page(notebook)
+            notebook.add(batch_tab, text='Separar pedidos')
+            tab_canvases[str(batch_tab)] = batch_canvas
+            self.order_batch_tab = OrderBatchTab(batch_page, self)
+        self._build_users_tab(notebook)
+        if not notebook.tabs():
+            notebook.pack_forget()
+            ttk.Label(main, text='Seu usuário não possui acesso a nenhuma aba.\n'
+                      'Solicite as permissões a um administrador.').pack(pady=24)
         self.root.protocol("WM_DELETE_WINDOW", self._close_window)
 
+    def _add_authorized_tab(self, notebook, page, permission, title):
+        if pode_acessar_aba(self.usuario_atual, permission):
+            notebook.add(page, text=title)
+
+    def _build_users_tab(self, notebook):
+        identity = self.usuario_atual
+        if not pode_acessar_aba(identity, 'usuarios'):
+            return
+        page = ttk.Frame(notebook, padding=18)
+        self.user_management_tab = UserManagementTab(page, identity)
+        notebook.add(page, text='Usuários')
+
     def _close_window(self):
+        batch = getattr(self, 'order_batch_tab', None)
+        if batch is not None and batch.worker is not None and batch.worker.is_alive():
+            messagebox.showinfo('Lote em andamento',
+                'Aguarde a conclusão do lote antes de fechar o aplicativo.', parent=self.root)
+            return
         checker = getattr(self, "existence_checker_tab", None)
         if checker is not None:
             checker.cancel.set()
@@ -249,7 +287,7 @@ class App:
         return container, page, canvas
 
     def _build_organizer_tab(self, main):
-        ttk.Label(main, text="Organizador de Estampas", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(main, text=APP_NAME, style="Title.TLabel").pack(anchor="w")
         ttk.Label(
             main,
             text="Adicione as pastas de estampas, atualize o índice e sincronize os pendentes.",
@@ -2358,6 +2396,8 @@ class App:
         messagebox.showerror("Erro", message)
 
     def _set_busy(self, busy):
+        if getattr(self, 'order_batch_tab', None) is not None:
+            self.order_batch_tab.set_busy(busy)
         if getattr(self, "manual_separation_tab", None) is not None:
             self.manual_separation_tab.set_busy(busy)
         if getattr(self, "compression_tab", None) is not None:

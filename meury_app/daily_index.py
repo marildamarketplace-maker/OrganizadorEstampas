@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .batch_output import print
 from .config import load_config
 from . import indexer
 from .index_run_state import index_updated_today, state_file_for

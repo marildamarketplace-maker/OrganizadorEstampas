@@ -22,7 +22,7 @@ class NativeTkTest(unittest.TestCase):
         for item in self.patches:
             item.start()
             self.addCleanup(item.stop)
-        self.app = App()
+        self.app = App(usuario_atual={'id': 1, 'usuario': 'admin', 'permissoes': ['admin']})
         self.app.root.withdraw()
         self.tab = self.app.compression_tab
         from meury_app.compression_store import CompressionStore

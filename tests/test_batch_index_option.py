@@ -78,6 +78,8 @@ class BatchIndexOptionTest(unittest.TestCase):
             }), encoding="utf-8")
 
             with (
+                patch('meury_app.batch_order_processor.solicitar_login_lote',
+                      return_value={'id': 1, 'usuario': 'admin', 'permissoes': ['admin']}),
                 patch.object(batch, "parse_args", return_value=SimpleNamespace(
                     projeto=str(project), codex="", atualizar_indice=None,
                 )),
@@ -134,6 +136,8 @@ class BatchIndexOptionTest(unittest.TestCase):
     def test_no_with_empty_input_does_not_prepare_or_load_index(self):
         with tempfile.TemporaryDirectory() as temporary:
             with (
+                patch('meury_app.batch_order_processor.solicitar_login_lote',
+                      return_value={'id': 1, 'usuario': 'admin', 'permissoes': ['admin']}),
                 patch.object(batch, "parse_args", return_value=SimpleNamespace(
                     projeto=temporary, codex="", atualizar_indice=None,
                 )),
@@ -153,6 +157,8 @@ class BatchIndexOptionTest(unittest.TestCase):
     def test_yes_with_empty_input_keeps_daily_index_check(self):
         with tempfile.TemporaryDirectory() as temporary:
             with (
+                patch('meury_app.batch_order_processor.solicitar_login_lote',
+                      return_value={'id': 1, 'usuario': 'admin', 'permissoes': ['admin']}),
                 patch.object(batch, "parse_args", return_value=SimpleNamespace(
                     projeto=temporary, codex="", atualizar_indice=True,
                 )),

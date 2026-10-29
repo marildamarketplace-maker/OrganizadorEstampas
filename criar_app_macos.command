@@ -3,7 +3,7 @@
 set -e
 
 BASE_DIR="$(cd "$(dirname "$0")" && pwd)"
-APP_PATH="$BASE_DIR/Organizador de Estampas.app"
+APP_PATH="$BASE_DIR/MV Image.app"
 SOURCE_FILE="$(mktemp -t organizador-estampas.XXXXXX.applescript)"
 
 cleanup() {
@@ -20,7 +20,7 @@ on run
     try
         do shell script "/bin/test -f " & quoted form of startScript
     on error
-        display alert "Organizador de Estampas" message "O arquivo executar_macos.command não foi encontrado ao lado do aplicativo." as critical
+        display alert "MV Image" message "O arquivo executar_macos.command não foi encontrado ao lado do aplicativo." as critical
         return
     end try
 
@@ -36,8 +36,12 @@ rm -rf "$APP_PATH"
 /usr/libexec/PlistBuddy -c "Add :LSUIElement bool true" "$APP_PATH/Contents/Info.plist" 2>/dev/null || \
   /usr/libexec/PlistBuddy -c "Set :LSUIElement true" "$APP_PATH/Contents/Info.plist"
 
+if [ -f "$BASE_DIR/assets/meury-logo.icns" ]; then
+  cp "$BASE_DIR/assets/meury-logo.icns" "$APP_PATH/Contents/Resources/applet.icns"
+fi
+
 echo
 echo "Aplicativo criado:"
 echo "$APP_PATH"
 echo
-echo "Nas próximas vezes, abra Organizador de Estampas.app."
+echo "Nas próximas vezes, abra MV Image.app."

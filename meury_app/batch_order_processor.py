@@ -6,9 +6,12 @@ import argparse
 import base64
 import csv
 import hashlib
+import getpass
 import json
 import os
 import shutil
+import sqlite3
+import warnings
 import subprocess
 import sys
 import textwrap
@@ -21,7 +24,9 @@ from typing import Any, Callable, Dict, Iterable, List, Sequence
 if __package__ in {None, ""}:  # Compatibilidade com execução direta deste arquivo.
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from meury_app.config import load_config
+from meury_app.batch_output import print
+from meury_app.config import load_config, configured_app_dir
+from meury_app.user_store import autenticar_usuario
 from meury_app import indexer
 from meury_app.daily_index import ensure_daily_index, prepare_daily_index
 from meury_app.environment import load_local_environment
@@ -258,6 +263,38 @@ def parse_args() -> argparse.Namespace:
     )
     parser.set_defaults(atualizar_indice=None)
     return parser.parse_args()
+
+
+def solicitar_login_lote() -> dict | None:
+    """Autentica no SQLite antes de sincronizar ou processar qualquer pedido."""
+    print('\nLOGIN — Processamento de pedidos em lote', flush=True)
+    database = configured_app_dir() / 'estado_indexador.sqlite3'
+    for attempt in range(3):
+        try:
+            username = input('Usuário: ').strip()
+            # Não permita o fallback do getpass que exibe a senha em consoles incompatíveis.
+            with warnings.catch_warnings():
+                warnings.simplefilter('error', getpass.GetPassWarning)
+                password = getpass.getpass('Senha: ')
+            identity = autenticar_usuario(database, username, password)
+            password = ''
+        except (EOFError, KeyboardInterrupt):
+            print('\nLogin cancelado. Lote encerrado.', flush=True)
+            return None
+        except getpass.GetPassWarning:
+            print('Não foi possível ocultar a senha. Abra o lote em um terminal interativo.', flush=True)
+            return None
+        except (sqlite3.Error, OSError, ValueError):
+            print('Não foi possível acessar o banco de usuários. Lote encerrado.', flush=True)
+            return None
+        if identity is not None:
+            print('Login realizado com sucesso.', flush=True)
+            return identity
+        print('Usuário ou senha inválidos.', flush=True)
+        if attempt < 2:
+            time.sleep(attempt + 1)
+    print('Limite de tentativas atingido. Lote encerrado.', flush=True)
+    return None
 
 
 def choose_index_update(value: bool | None) -> bool:
@@ -1151,6 +1188,8 @@ def main() -> int:
     input_dir = project / "pedidos_pdf" / "entrada"
     configure_terminal_style()
     print_terminal_header(input_dir)
+    if solicitar_login_lote() is None:
+        return 1
     try:
         update_index = choose_index_update(args.atualizar_indice)
     except ValueError as exc:
@@ -1160,13 +1199,21 @@ def main() -> int:
         print(terminal_text(
             "[ÍNDICE] Usando o índice salvo, sem atualização.", color="blue",
         ), flush=True)
-    codex = Path(args.codex).resolve() if str(args.codex).strip() else None
+    return run_batch(project, codex_path=args.codex, update_index=update_index)
+
+
+def run_batch(project: Path, *, codex_path: str = '', update_index: bool) -> int:
+    """Mesmo processamento para terminal e interface; autenticação é feita pelo chamador."""
+    started_at = time.monotonic()
+    project = Path(project).resolve()
+    input_dir = project / 'pedidos_pdf' / 'entrada'
+    codex = Path(codex_path).resolve() if str(codex_path).strip() else None
     completed_dir = input_dir / "concluido"
     reports_dir = project / "pedidos_pdf" / "relatorios"
     control_dir = project / "pedidos_pdf" / ".controle"
     extractions_dir = control_dir / "extracoes"
     history_path = control_dir / "historico.jsonl"
-    schema_path = project / "meury_app" / "batch_order_extraction.schema.json"
+    schema_path = Path(__file__).with_name("batch_order_extraction.schema.json")
 
     input_dir.mkdir(parents=True, exist_ok=True)
     completed_dir.mkdir(parents=True, exist_ok=True)

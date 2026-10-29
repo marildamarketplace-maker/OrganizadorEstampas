@@ -7,6 +7,9 @@ fi
 source .venv/bin/activate
 python3 -m meury_app.dependency_setup core
 python3 -m PyInstaller --noconfirm --clean --windowed \
+  --icon assets/meury-logo.icns \
+  --add-data "assets:assets" \
+  --add-data "meury_app/batch_order_extraction.schema.json:meury_app" \
   --additional-hooks-dir hooks \
   --hidden-import faiss \
   --hidden-import openai \
@@ -20,5 +23,5 @@ python3 -m PyInstaller --noconfirm --clean --windowed \
   --exclude-module scipy \
   --exclude-module sklearn \
   --exclude-module av \
-  --name "OrganizadorEstampasMeury" app.py
-echo "Aplicativo criado em dist/OrganizadorEstampasMeury.app"
+  --name "MV Image" app.py
+echo "Aplicativo criado em dist/MV Image.app"

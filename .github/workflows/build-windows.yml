@@ -70,11 +70,11 @@ jobs:
           if-no-files-found: error
 
       - name: Gerar aplicativo
-        run: pyinstaller --noconfirm --clean --windowed --additional-hooks-dir hooks --collect-all pypdfium2 --collect-all pypdfium2_raw --name "OrganizadorEstampasMeury" app.py
+        run: pyinstaller --noconfirm --clean --windowed --icon assets/meury-logo.ico --add-data "assets;assets" --add-data "meury_app/batch_order_extraction.schema.json;meury_app" --additional-hooks-dir hooks --collect-all pypdfium2 --collect-all pypdfium2_raw --name "MV Image" app.py
 
       - name: Disponibilizar aplicativo
         uses: actions/upload-artifact@v4
         with:
-          name: OrganizadorEstampas-Windows
-          path: dist/OrganizadorEstampasMeury/
+          name: MV-Image-Windows
+          path: dist/MV Image/
           if-no-files-found: error

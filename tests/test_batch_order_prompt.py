@@ -525,6 +525,8 @@ class BatchOrderPromptTest(unittest.TestCase):
             }
 
             with (
+                patch('meury_app.batch_order_processor.solicitar_login_lote',
+                      return_value={'id': 1, 'usuario': 'admin', 'permissoes': ['admin']}),
                 patch(
                     "meury_app.batch_order_processor.parse_args",
                     return_value=SimpleNamespace(
@@ -602,6 +604,8 @@ class BatchOrderPromptTest(unittest.TestCase):
                 }
 
             with (
+                patch('meury_app.batch_order_processor.solicitar_login_lote',
+                      return_value={'id': 1, 'usuario': 'admin', 'permissoes': ['admin']}),
                 patch(
                     "meury_app.batch_order_processor.parse_args",
                     return_value=SimpleNamespace(

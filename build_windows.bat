@@ -20,7 +20,10 @@ if not exist "%VENV_PY%" (
 "%VENV_PY%" -m meury_app.dependency_setup core
 if errorlevel 1 goto :erro
 "%VENV_PY%" -m PyInstaller --noconfirm --clean --windowed ^
-    --additional-hooks-dir hooks ^
+    --icon assets\meury-logo.ico ^
+    --add-data "assets;assets" ^
+    --add-data "meury_app/batch_order_extraction.schema.json;meury_app" ^
+  --additional-hooks-dir hooks ^
     --hidden-import faiss ^
     --hidden-import openai ^
     --collect-all pypdfium2 ^
@@ -33,10 +36,10 @@ if errorlevel 1 goto :erro
     --exclude-module scipy ^
     --exclude-module sklearn ^
     --exclude-module av ^
-    --name "OrganizadorEstampasMeury" app.py
+    --name "MV Image" app.py
 if errorlevel 1 goto :erro
 echo.
-echo Aplicativo criado em dist\OrganizadorEstampasMeury
+echo Aplicativo criado em dist\MV Image
 pause
 exit /b 0
 

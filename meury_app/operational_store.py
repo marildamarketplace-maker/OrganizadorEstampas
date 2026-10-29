@@ -8,9 +8,10 @@ import sqlite3
 import time
 
 from .index_progress import IndexProgress
+from .user_store import ensure_user_schema
 
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 STATE_COLUMNS = (
     "path", "codigo", "variante", "filename", "asset_id", "size", "last_modified",
     "content_hash", "indexed", "changed", "scan_status", "processing_status",
@@ -162,6 +163,7 @@ def ensure_schema(connection: sqlite3.Connection) -> None:
     for name, definition in retry_columns.items():
         if name not in columns:
             connection.execute(f"ALTER TABLE image_state ADD COLUMN {name} {definition}")
+    ensure_user_schema(connection)
     connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
 

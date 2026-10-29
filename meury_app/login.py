@@ -10,15 +10,16 @@ from tkinter import ttk
 
 from .user_store import autenticar_usuario
 from .config import APP_NAME
+from .window_mode import configure_maximized
 
 
 def solicitar_login(db_path: Path, *, root=None) -> dict | None:
     owns_root = root is None
     root = root if root is not None else tk.Tk()
     root.title(f'{APP_NAME} — Entrar')
-    root.resizable(False, False)
+    configure_maximized(root)
     frame = ttk.Frame(root, padding=28)
-    frame.pack(fill='both', expand=True)
+    frame.place(relx=0.5, rely=0.5, anchor='center')
     ttk.Label(frame, text='Entre para acessar as abas', font=('Arial', 15, 'bold')).grid(
         row=0, column=0, columnspan=2, pady=(0, 20))
     usuario = tk.StringVar(master=root)

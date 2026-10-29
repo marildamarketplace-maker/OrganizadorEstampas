@@ -1,0 +1,170 @@
+Preparando build para Windows...
+Depend�ncias core j� est�o atualizadas.
+171 INFO: PyInstaller: 6.14.2, contrib hooks: 2026.9
+171 INFO: Python: 3.12.10
+218 INFO: Platform: Windows-10-10.0.19044-SP0
+218 INFO: Python environment: C:\Users\Users\OrganizadorEstampas\.venv
+218 INFO: wrote C:\Users\Users\OrganizadorEstampas\MV Image.spec
+218 INFO: Removing temporary files and cleaning cache in C:\Users\Users\AppData\Local\pyinstaller
+2030 INFO: Module search paths (PYTHONPATH):
+['C:\\Users\\Users\\OrganizadorEstampas',
+ 'C:\\Users\\Users\\AppData\\Local\\Programs\\Python\\Python312\\python312.zip',
+ 'C:\\Users\\Users\\AppData\\Local\\Programs\\Python\\Python312\\DLLs',
+ 'C:\\Users\\Users\\AppData\\Local\\Programs\\Python\\Python312\\Lib',
+ 'C:\\Users\\Users\\AppData\\Local\\Programs\\Python\\Python312',
+ 'C:\\Users\\Users\\OrganizadorEstampas\\.venv',
+ 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages',
+ 'C:\\Users\\Users\\OrganizadorEstampas']
+2515 INFO: Appending 'binaries' from .spec
+2515 INFO: Appending 'datas' from .spec
+2515 INFO: checking Analysis
+2530 INFO: Building Analysis because Analysis-00.toc is non existent
+2530 INFO: Running Analysis Analysis-00.toc
+2530 INFO: Target bytecode optimization level: 0
+2530 INFO: Initializing module dependency graph...
+2530 INFO: Initializing module graph hook caches...
+2546 INFO: Analyzing modules for base_library.zip ...
+3983 INFO: Processing standard module hook 'hook-encodings.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+5701 INFO: Processing standard module hook 'hook-pickle.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+6857 INFO: Processing standard module hook 'hook-heapq.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+7263 INFO: Caching module dependency graph...
+7295 INFO: Looking for Python shared library...
+7310 INFO: Using Python shared library: C:\Users\Users\AppData\Local\Programs\Python\Python312\python312.dll
+7310 INFO: Analyzing C:\Users\Users\OrganizadorEstampas\app.py
+7310 INFO: Processing pre-find-module-path hook 'hook-tkinter.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_find_module_path'
+7310 INFO: TclTkInfo: initializing cached Tcl/Tk info...
+7404 WARNING: tkinter installation is broken. It will be excluded from the application
+7404 INFO: Processing standard module hook 'hook-PIL.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+7513 INFO: Processing standard module hook 'hook-PIL.Image.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+7935 INFO: Processing standard module hook 'hook-numpy.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+8232 INFO: Processing pre-safe-import-module hook 'hook-typing_extensions.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+8232 INFO: SetuptoolsInfo: initializing cached setuptools info...
+9169 INFO: Processing standard module hook 'hook-multiprocessing.util.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+9310 INFO: Processing standard module hook 'hook-xml.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+10138 INFO: Processing standard module hook 'hook-platform.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+10247 INFO: Processing standard module hook 'hook-sysconfig.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+11387 INFO: Processing standard module hook 'hook-difflib.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+12012 INFO: Processing standard module hook 'hook-charset_normalizer.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+12404 INFO: Processing standard module hook 'hook-xml.etree.cElementTree.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+12576 INFO: Processing standard module hook 'hook-PIL.ImageFilter.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+12935 INFO: Processing standard module hook 'hook-sqlite3.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+13482 INFO: Processing standard module hook 'hook-openpyxl.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+14529 INFO: Processing standard module hook 'hook-pydantic.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+15372 INFO: Processing standard module hook 'hook-zoneinfo.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+16435 INFO: Processing standard module hook 'hook-certifi.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+16528 INFO: Processing standard module hook 'hook-anyio.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+21520 INFO: Processing standard module hook 'hook-botocore.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+24743 INFO: Processing standard module hook 'hook-dateutil.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+24821 INFO: Processing pre-safe-import-module hook 'hook-six.moves.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+25040 INFO: Processing standard module hook 'hook-urllib3.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+25493 INFO: Processing standard module hook 'hook-cryptography.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+26539 INFO: hook-cryptography: cryptography does not seem to be using dynamically linked OpenSSL.
+27570 INFO: Processing pre-safe-import-module hook 'hook-packaging.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+28086 INFO: Processing standard module hook 'hook-pypdfium2.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+28117 INFO: Processing standard module hook 'hook-pypdfium2_raw.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+28414 INFO: Processing standard module hook 'hook-boto3.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+31772 INFO: Processing standard module hook 'hook-google.cloud.storage.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+33038 INFO: Processing standard module hook 'hook-google.api_core.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+33194 INFO: Processing standard module hook 'hook-opentelemetry.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+33700 INFO: Processing standard module hook 'hook-meury_app.sevenzip.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\hooks'
+33757 INFO: Analyzing hidden import 'pypdfium2.__main__'
+33757 INFO: Processing module hooks (post-graph stage)...
+34116 INFO: Processing pre-safe-import-module hook 'hook-tomli.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+34116 INFO: Setuptools: 'tomli' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.tomli'!
+34132 INFO: Processing standard module hook 'hook-setuptools.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+34147 INFO: Processing pre-safe-import-module hook 'hook-distutils.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+34178 INFO: Processing pre-safe-import-module hook 'hook-jaraco.functools.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+34178 INFO: Setuptools: 'jaraco.functools' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.jaraco.functools'!
+34178 INFO: Processing pre-safe-import-module hook 'hook-more_itertools.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+34178 INFO: Setuptools: 'more_itertools' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.more_itertools'!
+34303 INFO: Processing standard module hook 'hook-_osx_support.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+34585 INFO: Processing pre-safe-import-module hook 'hook-jaraco.text.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+34585 INFO: Setuptools: 'jaraco.text' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.jaraco.text'!
+34600 INFO: Processing standard module hook 'hook-setuptools._vendor.jaraco.text.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+34600 INFO: Processing pre-safe-import-module hook 'hook-importlib_resources.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+34600 INFO: Processing pre-safe-import-module hook 'hook-jaraco.context.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+34600 INFO: Setuptools: 'jaraco.context' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.jaraco.context'!
+35428 INFO: Processing pre-safe-import-module hook 'hook-wheel.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+35428 INFO: Setuptools: 'wheel' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.wheel'!
+35537 WARNING: Hidden import "tzdata" not found!
+35803 INFO: Processing standard module hook 'hook-PIL.SpiderImagePlugin.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+35990 INFO: Performing binary vs. data reclassification (2046 entries)
+36240 INFO: Looking for ctypes DLLs
+36272 WARNING: Ignoring /usr/lib/libobjc.A.dylib imported from C:\Users\Users\OrganizadorEstampas\meury_app\app_icon.py - only basenames are supported with ctypes imports!
+36272 WARNING: Ignoring /System/Library/Frameworks/AppKit.framework/AppKit imported from C:\Users\Users\OrganizadorEstampas\meury_app\app_icon.py - only basenames are supported with ctypes imports!
+36350 INFO: Analyzing run-time hooks ...
+36350 INFO: Including run-time hook 'pyi_rth_inspect.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+36365 INFO: Including run-time hook 'pyi_rth_pkgutil.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+36365 INFO: Including run-time hook 'pyi_rth_multiprocessing.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+36365 INFO: Including run-time hook 'pyi_rth_cryptography_openssl.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\rthooks'
+36365 INFO: Including run-time hook 'pyi_rth_setuptools.py' from 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+36475 INFO: Creating base_library.zip...
+36537 INFO: Looking for dynamic libraries
+40692 INFO: Extra DLL search directories (AddDllDirectory): ['C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\numpy.libs', 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\google_crc32c\\extra-dll', 'C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Lib\\site-packages\\faiss_cpu.libs']
+40692 INFO: Extra DLL search directories (PATH): []
+41661 INFO: Warnings written to C:\Users\Users\OrganizadorEstampas\build\MV Image\warn-MV Image.txt
+41911 INFO: Graph cross-reference written to C:\Users\Users\OrganizadorEstampas\build\MV Image\xref-MV Image.html
+42036 INFO: checking PYZ
+42036 INFO: Building PYZ because PYZ-00.toc is non existent
+42036 INFO: Building PYZ (ZlibArchive) C:\Users\Users\OrganizadorEstampas\build\MV Image\PYZ-00.pyz
+44154 INFO: Building PYZ (ZlibArchive) C:\Users\Users\OrganizadorEstampas\build\MV Image\PYZ-00.pyz completed successfully.
+44217 INFO: checking PKG
+44217 INFO: Building PKG because PKG-00.toc is non existent
+44217 INFO: Building PKG (CArchive) MV Image.pkg
+44248 INFO: Building PKG (CArchive) MV Image.pkg completed successfully.
+44248 INFO: Bootloader C:\Users\Users\OrganizadorEstampas\.venv\Lib\site-packages\PyInstaller\bootloader\Windows-64bit-intel\runw.exe
+44248 INFO: checking EXE
+44248 INFO: Building EXE because EXE-00.toc is non existent
+44248 INFO: Building EXE from EXE-00.toc
+44248 INFO: Copying bootloader EXE to C:\Users\Users\OrganizadorEstampas\build\MV Image\MV Image.exe
+44295 INFO: Copying icon to EXE
+44342 INFO: Copying 0 resources to EXE
+44342 INFO: Embedding manifest in EXE
+44389 INFO: Appending PKG archive to EXE
+44451 INFO: Fixing EXE headers
+44717 INFO: Building EXE from EXE-00.toc completed successfully.
+44732 INFO: checking COLLECT
+44732 INFO: Building COLLECT because COLLECT-00.toc is non existent
+44732 INFO: Removing dir C:\Users\Users\OrganizadorEstampas\dist\MV Image
+Traceback (most recent call last):
+  File "C:\Users\Users\OrganizadorEstampas\.venv\Lib\site-packages\PyInstaller\building\utils.py", line 394, in _make_clean_directory
+    os.remove(path)
+PermissionError: [WinError 5] Acesso negado: 'C:\\Users\\Users\\OrganizadorEstampas\\dist\\MV Image'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "C:\Users\Users\OrganizadorEstampas\.venv\Lib\site-packages\PyInstaller\__main__.py", line 321, in <module>
+    run()
+  File "C:\Users\Users\OrganizadorEstampas\.venv\Lib\site-packages\PyInstaller\__main__.py", line 215, in run
+    run_build(pyi_config, spec_file, **vars(args))
+  File "C:\Users\Users\OrganizadorEstampas\.venv\Lib\site-packages\PyInstaller\__main__.py", line 70, in run_build
+    PyInstaller.building.build_main.main(pyi_config, spec_file, **kwargs)
+  File "C:\Users\Users\OrganizadorEstampas\.venv\Lib\site-packages\PyInstaller\building\build_main.py", line 1282, in main
+    build(specfile, distpath, workpath, clean_build)
+  File "C:\Users\Users\OrganizadorEstampas\.venv\Lib\site-packages\PyInstaller\building\build_main.py", line 1220, in build
+    exec(code, spec_namespace)
+  File "C:\Users\Users\OrganizadorEstampas\MV Image.spec", line 46, in <module>
+    coll = COLLECT(
+           ^^^^^^^^
+  File "C:\Users\Users\OrganizadorEstampas\.venv\Lib\site-packages\PyInstaller\building\api.py", line 1150, in __init__
+    self.__postinit__()
+  File "C:\Users\Users\OrganizadorEstampas\.venv\Lib\site-packages\PyInstaller\building\datastruct.py", line 184, in __postinit__
+    self.assemble()
+  File "C:\Users\Users\OrganizadorEstampas\.venv\Lib\site-packages\PyInstaller\building\api.py", line 1162, in assemble
+    _make_clean_directory(self.name)
+  File "C:\Users\Users\OrganizadorEstampas\.venv\Lib\site-packages\PyInstaller\building\utils.py", line 396, in _make_clean_directory
+    _rmtree(path)
+  File "C:\Users\Users\OrganizadorEstampas\.venv\Lib\site-packages\PyInstaller\building\utils.py", line 421, in _rmtree
+    shutil.rmtree(path)
+  File "C:\Users\Users\AppData\Local\Programs\Python\Python312\Lib\shutil.py", line 781, in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Users\AppData\Local\Programs\Python\Python312\Lib\shutil.py", line 635, in _rmtree_unsafe
+    onexc(os.unlink, fullname, err)
+  File "C:\Users\Users\AppData\Local\Programs\Python\Python312\Lib\shutil.py", line 633, in _rmtree_unsafe
+    os.unlink(fullname)
+PermissionError: [WinError 5] Acesso negado: 'C:\\Users\\Users\\OrganizadorEstampas\\dist\\MV Image\\_internal\\numpy\\linalg\\_umath_linalg.cp312-win_amd64.pyd'
+ERRO: n�o foi poss�vel criar o aplicativo: Command '['C:\\Users\\Users\\OrganizadorEstampas\\.venv\\Scripts\\python.exe', '-m', 'PyInstaller', '--noconfirm', '--clean', '--windowed', '--icon', 'assets/meury-logo.ico', '--add-data', 'assets;assets', '--add-data', 'meury_app/batch_order_extraction.schema.json;meury_app', '--additional-hooks-dir', 'hooks', '--hidden-import', 'faiss', '--hidden-import', 'openai', '--hidden-import', 'google.cloud.storage', '--hidden-import', 'google.oauth2.service_account', '--collect-all', 'pypdfium2', '--collect-all', 'pypdfium2_raw', '--exclude-module', 'torch', '--exclude-module', 'torchvision', '--exclude-module', 'transformers', '--exclude-module', 'scipy', '--exclude-module', 'sklearn', '--exclude-module', 'av', '--name', 'MV Image', 'app.py']' returned non-zero exit status 1.

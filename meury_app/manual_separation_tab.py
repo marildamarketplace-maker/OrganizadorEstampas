@@ -9,6 +9,8 @@ from tkinter import ttk, filedialog, messagebox
 from .indexer import load_index
 from .manual_separation import folder_component, parse_designs, separate_designs
 from .platform_utils import open_existing_location
+from .config import load_config, save_config
+from .user_store import pode_acessar_aba
 
 
 class ManualSeparationTab:
@@ -20,8 +22,9 @@ class ManualSeparationTab:
         self.events = queue.Queue()
         self.client = tk.StringVar()
         self.category = tk.StringVar()
-        self.output = tk.StringVar(value=app.output_var.get())
-        self.status = tk.StringVar(value='Use o índice das pastas configuradas em Mapear estampas.')
+        self.can_edit_paths = pode_acessar_aba(app.usuario_atual, 'usuarios')
+        self.output = tk.StringVar(value=load_config().get('manual_output_dir', ''))
+        self.status = tk.StringVar(value='Use o índice das pastas de entrada definidas em Configurações.')
         ttk.Label(parent, text='Separar estampas', style='Title.TLabel').pack(anchor='w', pady=(0, 12))
         for label, variable in [('Cliente', self.client), ('Categoria', self.category)]:
             ttk.Label(parent, text=label).pack(anchor='w')
@@ -33,8 +36,12 @@ class ManualSeparationTab:
         ttk.Label(parent, text='Pasta de saída → cliente / categoria / imagens').pack(anchor='w')
         row = ttk.Frame(parent)
         row.pack(fill='x')
-        ttk.Entry(row, textvariable=self.output).pack(side='left', fill='x', expand=True)
-        ttk.Button(row, text='Escolher pasta', command=self.choose_output).pack(side='left')
+        entry = ttk.Entry(row, textvariable=self.output, state='normal' if self.can_edit_paths else 'readonly')
+        entry.pack(side='left', fill='x', expand=True)
+        entry.bind('<FocusOut>', lambda event: self.save_output())
+        ttk.Button(row, text='Escolher pasta', command=self.choose_output,
+                   state='normal' if self.can_edit_paths else 'disabled').pack(side='left')
+        ttk.Button(row, text='Abrir pasta', command=self.open_output).pack(side='left', padx=8)
         self.start_button = ttk.Button(parent, text='Separar estampas', command=self.start, style='Primary.TButton')
         self.start_button.pack(anchor='w', pady=12)
         ttk.Button(parent, text='Abrir pasta criada', command=self.open_destination).pack(anchor='w')
@@ -43,9 +50,24 @@ class ManualSeparationTab:
         self.log.pack(fill='both', expand=True)
 
     def choose_output(self):
+        if not self.can_edit_paths:
+            return
         path = filedialog.askdirectory(parent=self.app.root, title='Pasta de saída')
         if path:
             self.output.set(path)
+            self.save_output()
+
+    def save_output(self):
+        if self.can_edit_paths:
+            config = load_config()
+            config['manual_output_dir'] = self.output.get().strip()
+            save_config(config)
+
+    def open_output(self):
+        try:
+            open_existing_location(Path(self.output.get()).expanduser())
+        except (OSError, RuntimeError) as exc:
+            messagebox.showerror('Pasta indisponível', str(exc), parent=self.app.root)
 
     def open_destination(self):
         if self.destination:
@@ -65,7 +87,7 @@ class ManualSeparationTab:
             folder_component(category)
             parse_designs(text)
             if not output or not self.app.source_dirs:
-                raise ValueError('Escolha a saída e configure as pastas de origem em Mapear estampas.')
+                raise ValueError('Escolha a saída e configure as pastas de origem em Configurações.')
         except ValueError as exc:
             messagebox.showwarning('Confira os campos', str(exc), parent=self.app.root)
             return

@@ -15,6 +15,7 @@ import warnings
 import subprocess
 import sys
 import textwrap
+import tempfile
 import time
 from datetime import datetime
 from functools import lru_cache
@@ -407,6 +408,14 @@ def valid_extraction(value: Any) -> bool:
         return False
     if not all(value.get(key) for key in ("pedido", "data", "clienteCodigo", "clienteNome")):
         return False
+    # Mensagens de falha podem vir preenchidas em todos os campos do JSON.
+    # Pedido e código do cliente devem ser identificadores numéricos reais.
+    if not all(
+        isinstance(value.get(key), str) and value[key].strip().isascii()
+        and value[key].strip().isdigit()
+        for key in ("pedido", "clienteCodigo")
+    ):
+        return False
     products = value.get("produtos")
     if not isinstance(products, list) or not products:
         return False
@@ -566,6 +575,7 @@ def discover_codex_models(codex: Path) -> tuple[str, ...]:
             stderr=subprocess.PIPE,
             check=False,
             timeout=DEFAULT_CODEX_MODEL_DISCOVERY_TIMEOUT_SECONDS,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError("A consulta do catálogo de modelos do Codex expirou.") from exc
@@ -638,6 +648,7 @@ def run_codex(
         command = [
             str(codex),
             "exec",
+            "--skip-git-repo-check",
             "--config",
             f'model_reasoning_effort="{DEFAULT_CODEX_REASONING_EFFORT}"',
             "--cd",
@@ -665,6 +676,7 @@ def run_codex(
                 timeout=positive_timeout(
                     "CODEX_ORDER_TIMEOUT_SECONDS", DEFAULT_CODEX_TIMEOUT_SECONDS,
                 ),
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
             )
         except subprocess.TimeoutExpired as exc:
             output = exc.stdout or ""
@@ -875,12 +887,22 @@ def extract_with_fallback(
         ) from api_exc
 
 
+def extract_in_temporary_folder(*, temporary_folder: Path | None, **kwargs):
+    with tempfile.TemporaryDirectory(prefix='pedido-', dir=temporary_folder) as directory:
+        workspace = Path(directory)
+        local_pdf = workspace / Path(kwargs['pdf_path']).name
+        shutil.copyfile(kwargs['pdf_path'], local_pdf)
+        kwargs['pdf_path'] = local_pdf
+        kwargs['project'] = workspace
+        return extract_with_fallback(**kwargs)
+
+
 def load_order_context(*, update_index: bool = True) -> tuple[Path, dict[str, list[str]]]:
     """Prepara e preserva uma única instância do índice para todo o lote."""
     config = load_config()
-    output_value = config.get("output_dir")
+    output_value = config.get("batch_output_dir")
     if not output_value:
-        raise ValueError("Nenhuma pasta de saída foi salva no aplicativo.")
+        raise ValueError("Configure a pasta de saída na aba Separar pedidos com um administrador.")
 
     started = time.monotonic()
     if update_index:
@@ -1202,7 +1224,8 @@ def main() -> int:
     return run_batch(project, codex_path=args.codex, update_index=update_index)
 
 
-def run_batch(project: Path, *, codex_path: str = '', update_index: bool) -> int:
+def run_batch(project: Path, *, codex_path: str = '', update_index: bool,
+              temporary_folder: Path | None = None) -> int:
     """Mesmo processamento para terminal e interface; autenticação é feita pelo chamador."""
     started_at = time.monotonic()
     project = Path(project).resolve()
@@ -1320,7 +1343,8 @@ def run_batch(project: Path, *, codex_path: str = '', update_index: bool) -> int
                 )
             else:
                 print("  Aguardando extração do Codex...", flush=True)
-                extraction, extraction_provider, extraction_model = extract_with_fallback(
+                extraction, extraction_provider, extraction_model = extract_in_temporary_folder(
+                    temporary_folder=temporary_folder,
                     codex=codex,
                     project=project,
                     pdf_path=pdf_path,

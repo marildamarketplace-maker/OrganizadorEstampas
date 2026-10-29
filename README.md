@@ -253,6 +253,30 @@ próprias no SQLite operacional existente, com estados e manifesto consultáveis
 Mantenha a pasta de dados do aplicativo em disco local; SQLite em rede não é
 uma configuração validada. Origens e saída podem estar na rede.
 
+Cada nova compactação concluída registra seus PSDs efetivamente incluídos na
+tabela `compression_file`, relacionada à execução em `compression_run`. O estado
+final e os membros são gravados em uma única transação. O mesmo PSD pode constar
+em várias execuções; nome, origem, caminho interno, tamanho e modificação são
+preservados. O caminho do `.7z` fica no registro da execução. O histórico anterior
+é mantido, sem converter listas de análise antigas em evidência de inclusão.
+
+Antes de publicar, o banco guarda o manifesto aprovado, o destino e a etapa de
+finalização. Ao iniciar a aba, ao atualizar/recuperar pendentes ou antes de uma
+nova compactação, a recuperação usa o mesmo bloqueio da compactação e valida o
+`.7z` final: integridade, caminhos internos, tamanhos, método e modo não sólido.
+Ela não precisa dos originais. Só então registra os membros e marca a execução
+como `recuperada`, sem duplicar relações. Arquivos ausentes e inválidos recebem
+estados distintos; falta de acesso ao destino ou ao mecanismo de validação fica
+`pendente de recuperação`, permitindo nova tentativa. A recuperação não apaga o
+compactado publicado quando a gravação do banco falha.
+
+Junto ao `.7z`, o arquivo `.conteudo.txt` descreve o conteúdo final validado,
+com execução, validação, quantidade, nomes, origens, caminhos internos e tamanhos.
+Ignorados e erros/avisos ficam em seções separadas. O `.txt` técnico continua
+existindo. A aba permite pesquisar por nome/caminho do PSD incluído, consultar o
+conteúdo final separado da análise e abrir a saída ou o relatório. As localizações
+são históricas; sua presença atual só é conferida ao tentar abrir.
+
 **Limites operacionais:** a inclusão por fluxo exige uma atualização do 7z por
 arquivo; lotes muito grandes podem ser lentos e as atualizações podem reescrever
 o contêiner, exigindo espaço temporário adicional. A análise e a tabela mantêm

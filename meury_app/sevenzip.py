@@ -9,6 +9,10 @@ import tempfile
 from .psd_search import checkpoint, validate_internal
 
 
+class ArchiveUnavailable(RuntimeError):
+    """Validation could not run reliably; retry rather than declaring corruption."""
+
+
 def locate():
     configured = os.environ.get("MEURY_7Z_PATH", "")
     if configured:
@@ -83,8 +87,20 @@ class SevenZip:
                   "-scsUTF-8", "-sccUTF-8", f"-si{name}", str(archive)], cancel, stream)
 
     def validate(self, archive, items, cancel):
-        self.run(["t", "-bd", "-sccUTF-8", str(archive)], cancel)
-        listing = self.run(["l", "-slt", "-ba", "-sccUTF-8", str(archive)], cancel)
+        def inspect(args):
+            try:
+                return self.run(args, cancel)
+            except RuntimeError as exc:
+                text = str(exc).casefold()
+                # 7z may also say "cannot open as archive" after an OS access error.
+                # Such a diagnostic must remain retryable, even if it mentions corruption.
+                if any(marker in text for marker in ("access is denied", "access denied", "permission denied", "acesso negado", "network path", "network name", "sharing violation")):
+                    raise ArchiveUnavailable(str(exc)) from exc
+                if any(marker in text for marker in ("data error", "crc failed", "headers error", "is not archive", "can not open the file as", "unexpected end of archive")):
+                    raise
+                raise ArchiveUnavailable(str(exc)) from exc
+        inspect(["t", "-bd", "-sccUTF-8", str(archive)])
+        listing = inspect(["l", "-slt", "-ba", "-sccUTF-8", str(archive)])
         entries = []
         for block in listing.replace("\r\n", "\n").strip().split("\n\n"):
             record = dict(line.split(" = ", 1) for line in block.splitlines() if " = " in line)
@@ -96,7 +112,7 @@ class SevenZip:
                     raise RuntimeError("Método real do compactado não é LZMA2.")
         if sorted(entries) != sorted((item.internal, item.size) for item in items):
             raise RuntimeError("Inventário do 7z diverge do manifesto aprovado.")
-        header = self.run(["l", "-slt", "-sccUTF-8", str(archive)], cancel).split("----------", 1)[0]
+        header = inspect(["l", "-slt", "-sccUTF-8", str(archive)]).split("----------", 1)[0]
         if "Solid = -" not in header:
             raise RuntimeError("Não foi possível confirmar compressão sólida desativada.")
         properties = dict(line.split(" = ", 1) for line in header.splitlines() if " = " in line)

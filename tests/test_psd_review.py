@@ -65,7 +65,7 @@ class ReviewTest(unittest.TestCase):
         self.assertEqual(result["included_paths"], [])
         saved = self.store.get(result["id"])["payload"]
         self.assertEqual(saved["included"], 0)
-        self.assertIn("ainda não publicado", Path(result["log"]).read_text())
+        self.assertIn("ainda não publicado", Path(result["log"]).read_text(encoding="utf-8"))
 
     def test_manifest_frozen_against_changes_by_caller(self):
         analysis = analyze(self.settings)
@@ -105,7 +105,7 @@ class ReviewTest(unittest.TestCase):
     def test_publication_failure_does_not_report_savings_or_included_files(self):
         with patch("meury_app.psd_compression.publish_without_overwrite", side_effect=OSError("publication denied")):
             result = compress(analyze(self.settings), store=self.store, engine=FakeEngine())
-        self.assertEqual(result["state"], "falhou")
+        self.assertEqual(result["state"], "pendente de recuperação")
         self.assertEqual(result["included"], 0)
         self.assertNotIn("difference_bytes", result)
         self.assertNotIn("archive_bytes", result)
@@ -153,6 +153,8 @@ class ReviewTest(unittest.TestCase):
         tab.aux_workers = []
         tab.events = queue.Queue()
         tab.history_generation = 0
+        tab.history_query = Mock()
+        tab.history_query.get.return_value = ""
         tab.store = self.store
         tab.app = Mock()
         tab.root = Mock()
@@ -277,7 +279,7 @@ class ReviewTest(unittest.TestCase):
         final_log = json.loads(log.splitlines()[-1].split(" ", 1)[1])
         self.assertEqual(final_log["included_paths"], result["included_paths"])
         for path in files:
-            self.assertIn(path, log)
+            self.assertIn(json.dumps(path, ensure_ascii=False)[1:-1], log)
         extraction = self.root / "extração somente teste"
         self.assertTrue(extraction.is_relative_to(self.root))
         engine.run(["x", result["archive"], f"-o{extraction}", "-y"])
@@ -293,7 +295,7 @@ class ReviewTest(unittest.TestCase):
                 self.assertEqual(extracted_hash, files[item["path"]]["sha256"])
                 evidence.append({"original": str(original.relative_to(self.root)), "internal": item["internal"], "original_sha256": files[item["path"]]["sha256"], "extracted_sha256": extracted_hash})
         archive_folder = Path(result["archive"]).parent
-        self.assertEqual({path.name for path in archive_folder.iterdir()}, {Path(result["archive"]).name, Path(result["log"]).name})
+        self.assertEqual({path.name for path in archive_folder.iterdir()}, {Path(result["archive"]).name, Path(result["log"]).name, Path(result["report"]).name})
         self.assertFalse(any(path.suffix.casefold() == ".psd" for path in output.rglob("*")))
         self.assertEqual(len(list(extraction.rglob("*.*"))), 4)
         report = {"platform": platform.platform(), "mechanism": result["mechanism"], "inspection": result["inspection"], "originals_checked": 5, "included": 4, "sha256_comparisons": evidence, "originals_unchanged": True, "manifest_log_history_consistent": True, "no_loose_psds": True, "all_children_reaped": True, "test_data": "synthetic files, temporary directories removed after test", "compression_argv": [args[1:] for args in commands if args[1] == "a"]}

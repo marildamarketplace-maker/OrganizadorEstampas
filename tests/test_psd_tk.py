@@ -17,7 +17,12 @@ class NativeTkTest(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root_path = Path(self.temporary.name).resolve()
+        from meury_app.compression_store import CompressionStore
+        isolated_store = CompressionStore(self.root_path / "dados" / "state.sqlite3")
         self.patches = [patch("meury_app.ui.load_config", return_value=dict(DEFAULT_CONFIG))]
+        self.patches += [patch("meury_app.psd_compression_tab.CompressionStore", return_value=isolated_store),
+                         patch("meury_app.psd_compression_tab.load_config", return_value=dict(DEFAULT_CONFIG)),
+                         patch("meury_app.psd_compression_tab.save_config")]
         self.patches += [patch.object(App, name) for name in ("_try_load_saved_index", "_refresh_semantic_status", "_refresh_visual_status", "_refresh_catalog_statistics")]
         for item in self.patches:
             item.start()
@@ -34,6 +39,8 @@ class NativeTkTest(unittest.TestCase):
         try:
             self.tab.cancel.set()
             self.settle()
+            for callback in self.app.root.tk.call("after", "info"):
+                self.app.root.after_cancel(callback)
             self.app.root.destroy()
         except Exception:
             pass
@@ -79,13 +86,38 @@ class NativeTkTest(unittest.TestCase):
         self.assertIn("concluída", self.tab.status.get())
         self.assertEqual(len(self.tab.history.get_children()), 1)
         self.assertEqual(len(list((self.root_path / "saida").rglob("*.7z"))), 1)
-        self.assertEqual(len(list((self.root_path / "saida").rglob("*.txt"))), 1)
+        self.assertEqual(len(list((self.root_path / "saida").rglob("*.txt"))), 2)
+        identity = self.tab.history.get_children()[0]
+        self.tab.history.selection_set(identity)
+        self.tab.history_details()
+        self.settle()
+        from tkinter import ttk
+        notebooks = [widget for dialog in self.app.root.winfo_children()
+                     for widget in dialog.winfo_children() if isinstance(widget, ttk.Notebook)]
+        self.assertTrue(any([notebook.tab(tab, "text") for tab in notebook.tabs()] ==
+                            ["PSDs efetivamente incluídos", "Análise e decisões"] for notebook in notebooks))
+        self.tab.history_query.set("ÁRVORE")
+        self.tab.refresh_history()
+        self.settle()
+        self.assertEqual(len(self.tab.history.get_children()), 1)
+        self.tab.history_query.set("ausente")
+        self.tab.refresh_history()
+        self.settle()
+        self.assertEqual(len(self.tab.history.get_children()), 0)
+        self.tab.history_query.set("")
+        self.tab.refresh_history()
+        self.settle()
+        self.tab.history.selection_set(identity)
+        with patch("meury_app.psd_compression_tab.open_with_default_application") as opener:
+            self.tab.open_report()
+            self.settle()
+            opener.assert_called_once()
 
     def test_slow_history_does_not_block_event_loop_or_enable_controls(self):
         original = self.tab.store.list
-        def slow_read():
+        def slow_read(*args, **kwargs):
             time.sleep(.25)
-            return original()
+            return original(*args, **kwargs)
         ticks = []
         self.app.root.after(30, lambda: ticks.append(time.monotonic()))
         with patch.object(self.tab.store, "list", side_effect=slow_read):

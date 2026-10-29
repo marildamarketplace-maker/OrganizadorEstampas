@@ -8,7 +8,7 @@ from .user_store import exigir_permissao
 
 
 def executar_lote(project: Path, database: Path, usuario_id: int, *, update_index: bool,
-                  log, codex_path: str = '') -> int:
+                  log, codex_path: str = '', temporary_folder: Path | None = None) -> int:
     exigir_permissao(database, usuario_id, 'separar_pedidos')
     project = Path(project).resolve()
     lock = project / 'pedidos_pdf' / '.controle' / 'em_execucao'
@@ -22,7 +22,8 @@ def executar_lote(project: Path, database: Path, usuario_id: int, *, update_inde
         print_terminal_header(project / 'pedidos_pdf' / 'entrada')
         if not update_index:
             print('[ÍNDICE] Usando o índice salvo, sem atualização.')
-        return run_batch(project, codex_path=codex_path, update_index=update_index)
+        return run_batch(project, codex_path=codex_path, update_index=update_index,
+                         temporary_folder=temporary_folder)
     finally:
         output_sink.reset(token)
         lock.rmdir()

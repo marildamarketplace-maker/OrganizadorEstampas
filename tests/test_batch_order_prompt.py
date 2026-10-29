@@ -115,6 +115,10 @@ class BatchOrderPromptTest(unittest.TestCase):
         }
 
         self.assertTrue(valid_extraction(extraction))
+        for key in ('pedido', 'clienteCodigo'):
+            invalid = dict(extraction)
+            invalid[key] = 'ERRO: acesso negado ao PDF; extração não realizada.'
+            self.assertFalse(valid_extraction(invalid))
         extraction["produtos"][0]["estampa"] = ""
         self.assertFalse(valid_extraction(extraction))
 
@@ -336,7 +340,7 @@ class BatchOrderPromptTest(unittest.TestCase):
         self.assertEqual(models, ("modelo-a", "modelo-b"))
         self.assertEqual(
             subprocess_run.call_args.args[0],
-            ["/bin/codex-teste", "debug", "models"],
+            [str(Path("/bin/codex-teste")), "debug", "models"],
         )
 
     def test_uses_static_model_chain_when_catalog_discovery_fails(self):

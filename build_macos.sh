@@ -1,27 +1,18 @@
 #!/bin/bash
 set -e
 cd "$(dirname "$0")"
-if [ ! -d ".venv" ]; then
-  python3 -m venv .venv
+# Atalho compatível: o Python identifica o SO e escolhe o build nativo.
+if [ -f .venv/Scripts/python.exe ]; then
+  exec .venv/Scripts/python.exe build_app.py
+elif [ -x .venv/bin/python ]; then
+  exec .venv/bin/python build_app.py
+elif command -v python3 >/dev/null 2>&1; then
+  exec python3 build_app.py
+elif command -v python >/dev/null 2>&1; then
+  exec python build_app.py
+elif command -v py >/dev/null 2>&1; then
+  exec py -3 build_app.py
+else
+  echo "ERRO: Python 3 não encontrado." >&2
+  exit 1
 fi
-source .venv/bin/activate
-python3 -m meury_app.dependency_setup core
-python3 -m PyInstaller --noconfirm --clean --windowed \
-  --icon assets/meury-logo.icns \
-  --add-data "assets:assets" \
-  --add-data "meury_app/batch_order_extraction.schema.json:meury_app" \
-  --additional-hooks-dir hooks \
-  --hidden-import faiss \
-  --hidden-import openai \
-  --collect-all pypdfium2 \
-  --collect-all pypdfium2_raw \
-  --hidden-import google.cloud.storage \
-  --hidden-import google.oauth2.service_account \
-  --exclude-module torch \
-  --exclude-module torchvision \
-  --exclude-module transformers \
-  --exclude-module scipy \
-  --exclude-module sklearn \
-  --exclude-module av \
-  --name "MV Image" app.py
-echo "Aplicativo criado em dist/MV Image.app"

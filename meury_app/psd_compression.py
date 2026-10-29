@@ -9,12 +9,121 @@ import stat
 import tempfile
 import time
 import uuid
+from types import SimpleNamespace
 
 from .compression_store import CompressionStore
 from .index_journal import catalog_lock
 from .platform_utils import publish_without_overwrite
 from .psd_search import Cancelled, checkpoint, portable_key, safe_source, validate_internal
 from .sevenzip import SevenZip
+
+
+def write_content_report(identity, payload):
+    """Only final validated members belong in the content section."""
+    report = Path(payload["report"])
+    lines = ["CONTEÚDO FINAL DA COMPACTAÇÃO", f"Execução: {identity}",
+             f"Compactado: {payload['archive']}", f"Validação: {payload['validation']}",
+             f"PSDs incluídos: {len(payload.get('final_files', []))}",
+             "Localizações registradas no momento da compactação; disponibilidade atual não verificada.",
+             "", "ARQUIVOS EFETIVAMENTE INCLUÍDOS"]
+    for item in payload.get("final_files", []):
+        lines.extend([f"Nome: {Path(item['path']).name}", f"Origem: {item['path']}",
+                      f"Interno: {item['internal']}", f"Tamanho: {item['size']} bytes", ""])
+    lines.extend(["", "ARQUIVOS IGNORADOS"])
+    for item in payload.get("analysis", {}).get("files", []):
+        if not item.get("selected"):
+            lines.append(f"{item['path']} — {item.get('decision', 'não selecionado')}")
+    lines.extend(["", "ERROS E AVISOS"])
+    lines.extend(str(error) for error in payload.get("errors", []))
+    lines.extend(str(error) for error in payload.get("analysis", {}).get("issues", []))
+    lines.extend(f"Nome não encontrado: {name}" for name in payload.get("analysis", {}).get("missing", []))
+    # Atomic replacement also allows an interrupted report to be rebuilt on recovery.
+    temporary = report.with_suffix(".tmp")
+    temporary.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.replace(temporary, report)
+
+
+def recover_run(identity, payload, engine=None):
+    """Validate the persisted publication intent without consulting original PSDs."""
+    from .sevenzip import ArchiveUnavailable
+    payload.setdefault("errors", [])
+    manifest = payload.get("approved_manifest")
+    if payload.get("stage") != "publishing" or not manifest or not payload.get("archive"):
+        state = "interrompida"
+    else:
+        archive = Path(payload["archive"])
+        try:
+            # Do not use exists(): some platforms suppress access errors as False.
+            info = archive.stat()
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError("Destino publicado não é arquivo regular")
+            with archive.open("rb") as stream:
+                stream.read(1)
+        except FileNotFoundError as exc:
+            # A missing share/mount is not evidence that its archive was deleted.
+            try:
+                archive.parent.stat()
+            except OSError:
+                payload["recovery_error"] = str(exc)
+                return "pendente de recuperação", payload
+            state = "compactado ausente"
+            payload["validation"] = "Recuperação: compactado final ausente; inclusão não confirmada."
+        except OSError as exc:
+            payload["recovery_error"] = str(exc)
+            return "pendente de recuperação", payload
+        except ValueError as exc:
+            payload["recovery_error"] = str(exc)
+            state = "compactado inválido"
+        else:
+            try:
+                validator = engine or SevenZip()
+            except Exception as exc:
+                payload["recovery_error"] = str(exc)
+                return "pendente de recuperação", payload
+            try:
+                keys = set()
+                for item in manifest:
+                    key = portable_key(validate_internal(item["internal"]))
+                    if key in keys or not isinstance(item["size"], int) or item["size"] < 0:
+                        raise ValueError("Manifesto persistido inválido")
+                    keys.add(key)
+                    if not isinstance(item["path"], str) or not isinstance(item["mtime_ns"], int):
+                        raise ValueError("Metadados do manifesto inválidos")
+                items = [SimpleNamespace(**item) for item in manifest]
+                payload["validation"] = validator.validate(archive, items, lambda: False)
+                after = archive.stat()
+                if (after.st_size, after.st_mtime_ns) != (info.st_size, info.st_mtime_ns):
+                    raise ArchiveUnavailable("Compactado alterado durante a validação; tente novamente")
+            except (OSError, ArchiveUnavailable) as exc:
+                payload["recovery_error"] = str(exc)
+                return "pendente de recuperação", payload
+            except (RuntimeError, ValueError, TypeError, KeyError) as exc:
+                payload["recovery_error"] = str(exc)
+                payload["validation"] = f"Falha na validação de recuperação: {exc}"
+                state = "compactado inválido"
+            else:
+                payload.update(published=True, final_files=manifest, included=len(manifest),
+                               included_paths=[item["path"] for item in manifest], recovered=True)
+                payload.update(size_summary(sum(item["size"] for item in manifest), info.st_size))
+                payload.pop("recovery_error", None)
+                payload["ended"] = datetime.now().isoformat()
+                payload.setdefault("report", str(archive.with_suffix(".conteudo.txt")))
+                try:
+                    write_content_report(identity, payload)
+                except OSError as exc:
+                    payload["recovery_error"] = f"Relatório pendente: {exc}"
+                    return "pendente de recuperação", payload
+                return "recuperada", payload
+    # Keep the technical log, including legacy interrupted runs.
+    try:
+        log = Path(str(payload.get("log", "")))
+        if log.is_absolute() and log.suffix == ".txt":
+            with log.open("a", encoding="utf-8") as stream:
+                stream.write(f"{datetime.now().isoformat()} Estado: {state} (recuperação).\n")
+    except OSError:
+        pass
+    payload.update(published=False, final_files=[], included=0, included_paths=[])
+    return state, payload
 
 
 def sanitized(value):
@@ -78,7 +187,7 @@ def compress(analysis, cancel=lambda: False, progress=lambda *args: None, store=
     if any(output == Path(source).expanduser().resolve() for source in analysis.settings.sources):
         raise ValueError("Saída igual à origem")
     with catalog_lock(lock_path(store)):
-        store.recover()
+        store.recover(locked=True)
         output.mkdir(parents=True, exist_ok=True)
         # Exclusive directory reserves the result names, including across application instances.
         identity = uuid.uuid4().hex
@@ -88,6 +197,7 @@ def compress(analysis, cancel=lambda: False, progress=lambda *args: None, store=
         archive = base.with_suffix(".7z")
         log_path = base.with_suffix(".txt")
         payload = {"analysis": analysis.snapshot(), "archive": str(archive), "log": str(log_path),
+                   "report": str(base.with_suffix(".conteudo.txt")),
                    "errors": [], "validation": "Não executada", "included": 0,
                    "processed": 0, "published": False, "included_paths": []}
         state = "em andamento"
@@ -105,6 +215,9 @@ def compress(analysis, cancel=lambda: False, progress=lambda *args: None, store=
                 record(f"Início | execução {identity}")
                 record(payload["analysis"])
                 record(f"Destino {folder}; compactado {archive}; LZMA2, normal (5), sólido desativado")
+                payload["approved_manifest"] = [dict(path=item.path, internal=item.internal,
+                                                     size=item.size, mtime_ns=item.mtime_ns) for item in selected]
+                payload["stage"] = "preparing"
                 persist()
                 checkpoint(cancel)
                 engine = engine or SevenZip()
@@ -113,7 +226,9 @@ def compress(analysis, cancel=lambda: False, progress=lambda *args: None, store=
                 engine.probe(cancel)
                 payload["mechanism"] = getattr(engine, "version", "Mecanismo simulado")
                 record(f"Versão: {payload['mechanism']}")
-                with tempfile.NamedTemporaryFile(prefix=".incompleto-", suffix=".7z", dir=folder, delete=False) as reserved:
+                # NAS/Samba can map a leading dot to the Windows Hidden attribute,
+                # which survives renaming the temporary archive to its final name.
+                with tempfile.NamedTemporaryFile(prefix="incompleto-", suffix=".7z", dir=folder, delete=False) as reserved:
                     temporary = Path(reserved.name)
                 temporary.unlink()  # 7z creates a new container, not an empty existing file
                 total = len(selected)
@@ -151,23 +266,25 @@ def compress(analysis, cancel=lambda: False, progress=lambda *args: None, store=
                 record("Tamanho/modificação conferidos antes e depois; não é comparação criptográfica nem snapshot.")
                 checkpoint(cancel)
                 # Persist intent before publishing; recovery can explain an interrupted finalization.
+                payload["stage"] = "publishing"
                 persist()
                 publish_without_overwrite(temporary, archive)
                 temporary = None
                 payload["included"] = len(selected)
                 payload["included_paths"] = [item.path for item in selected]
                 payload["published"] = True
+                payload["final_files"] = payload["approved_manifest"]
                 payload.update(size_summary(sum(item.size for item in selected), validated_size))
                 state = "concluída com avisos" if analysis.incomplete or analysis.issues or analysis.missing else "concluída"
             except Cancelled as exc:
                 state = "cancelada"
                 payload["errors"].append(sanitized(exc))
             except Exception as exc:
-                state = "falhou"
+                state = "pendente de recuperação" if payload.get("stage") == "publishing" else "falhou"
                 payload["errors"].append(sanitized(exc))
             finally:
                 # 7-Zip can create additional update temporaries beside its target.
-                for leftover in folder.glob(".incompleto-*"):
+                for leftover in folder.glob("incompleto-*"):
                     try:
                         leftover.unlink()
                     except OSError as exc:
@@ -175,6 +292,12 @@ def compress(analysis, cancel=lambda: False, progress=lambda *args: None, store=
                 if state == "concluída" and payload["errors"]:
                     state = "concluída com avisos"
                 payload["ended"] = datetime.now().isoformat()
+                if payload["published"]:
+                    try:
+                        write_content_report(identity, payload)
+                    except OSError as exc:
+                        payload["errors"].append(f"Não foi possível gerar relatório: {sanitized(exc)}")
+                        state = "pendente de recuperação"
                 try:
                     record(f"Fim | estado: {state}")
                     record(payload)

@@ -55,7 +55,7 @@ class BatchIndexOptionTest(unittest.TestCase):
             source.write_bytes(b"imagem do catalogo salvo")
             order_index = {image_key("MV27951", "MV27951-A"): [str(source)]}
             output = project / "saida"
-            config = {"output_dir": str(output), "source_dirs": [str(source.parent)]}
+            config = {"batch_output_dir": str(output), "source_dirs": [str(source.parent)]}
             input_dir = project / "pedidos_pdf" / "entrada"
             input_dir.mkdir(parents=True)
             pdf = input_dir / "20004749.pdf"
@@ -178,7 +178,7 @@ class BatchIndexOptionTest(unittest.TestCase):
             source = project / "estampas"
             with (
                 patch.object(batch, "load_config", return_value={
-                    "output_dir": str(project / "saida"),
+                    "batch_output_dir": str(project / "saida"),
                     "source_dirs": [str(source)],
                 }),
                 patch.object(batch.indexer, "load_index_payload", return_value=None),

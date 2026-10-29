@@ -23,6 +23,14 @@ class OrderBatchTkTests(unittest.TestCase):
                 app = SimpleNamespace(root=root, usuario_atual={'id': user, 'permissoes': ['separar_pedidos']})
                 app._set_busy = lambda busy: tab.set_busy(busy)
                 tab = OrderBatchTab(root, app)
+                tab.append_log('Primeira mensagem\n')
+                tab.follow_logs.set(False)
+                with patch.object(tab.log, 'see') as see:
+                    tab.append_log('Segunda mensagem\n')
+                    see.assert_not_called()
+                tab.copy_logs()
+                self.assertIn('Segunda mensagem', root.clipboard_get())
+                self.assertEqual(str(tab.log['state']), 'disabled')
                 tab.project.set(str(project))
                 with patch('meury_app.order_batch_tab.OPERATIONAL_DB_FILE', database), \
                      patch('meury_app.order_batch_tab.messagebox.askyesnocancel', return_value=False) as question, \

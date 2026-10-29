@@ -54,6 +54,8 @@ DEFAULT_CONFIG = {
     "input_mode": "excel",
     "source_dirs": [],
     "output_dir": "",
+    "batch_output_dir": "",
+    "manual_output_dir": "",
     "collector_source_dirs": [],
     "collector_output_dir": "",
     "collector_extensions": [".jpg", ".jpeg", ".png"],

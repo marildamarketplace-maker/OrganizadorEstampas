@@ -25,17 +25,19 @@ class TabPermissionsTests(unittest.TestCase):
     def test_notebook_visibility_and_feature_initialization(self):
         cases = [(None, []), ({'permissoes': []}, [])]
         cases += [({'permissoes': [key]}, [label]) for key, label in PERMISSOES_ABAS]
-        cases += [({'id': 1, 'permissoes': ['admin']}, [label for _, label in PERMISSOES_ABAS] + ['Usuários'])]
+        cases += [({'id': 1, 'permissoes': ['admin']}, [label for _, label in PERMISSOES_ABAS] + ['Configurações', 'Usuários'])]
         for identity, expected in cases:
             with self.subTest(identity=identity):
                 app = App.__new__(App)
                 app.usuario_atual = identity
                 app.root = Mock()
-                app._scrollable_page = Mock(side_effect=lambda parent: (Mock(), Mock(), Mock()))
+                app.app_data_dir_var = Mock()
+                app._scrollable_page = Mock(side_effect=lambda parent, **kwargs: (Mock(), Mock(), Mock()))
                 app._build_organizer_tab = Mock()
                 app._build_collector_tab = Mock()
                 app._build_search_tab = Mock()
-                with patch('meury_app.ui.ttk.Frame'), patch('meury_app.ui.ttk.Label') as label, \
+                app._source_paths_row = Mock()
+                with patch('meury_app.ui.ttk.Frame'), patch('meury_app.ui.ttk.Entry'), patch('meury_app.ui.ttk.Button'), patch('meury_app.ui.ttk.Label') as label, \
                      patch('meury_app.ui.ttk.Notebook') as notebook, \
                      patch('meury_app.ui.CompressionTab') as compression, \
                      patch('meury_app.ui.ManualSeparationTab') as separation, \

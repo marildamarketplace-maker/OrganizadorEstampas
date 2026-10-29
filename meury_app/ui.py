@@ -10,7 +10,8 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from .order_batch_tab import OrderBatchTab
 from .user_management_tab import UserManagementTab
 from .app_icon import apply_app_icon
-from .user_store import pode_acessar_aba
+from .window_mode import configure_maximized
+from .user_store import pode_acessar_aba, PERMISSOES_ABAS
 from .art_search import ArtSearchEngine, SearchResult, ThumbnailCache, principal_keywords
 from .config import (
     APP_DIR, APP_NAME, load_config, save_config,
@@ -53,6 +54,7 @@ class App:
         self.root.title(APP_NAME)
         self.root.geometry("960x840")
         self.root.minsize(640, 480)
+        configure_maximized(self.root)
 
         self.config = load_config()
         self.index = {}
@@ -213,10 +215,11 @@ class App:
         if pode_acessar_aba(self.usuario_atual, 'verificar_existencia'):
             self.existence_checker_tab = ExistenceCheckerTab(existence_page, self)
         if pode_acessar_aba(self.usuario_atual, 'separar_pedidos'):
-            batch_tab, batch_page, batch_canvas = self._scrollable_page(notebook)
+            batch_tab, batch_page, batch_canvas = self._scrollable_page(notebook, stretch=True)
             notebook.add(batch_tab, text='Separar pedidos')
             tab_canvases[str(batch_tab)] = batch_canvas
             self.order_batch_tab = OrderBatchTab(batch_page, self)
+        self._build_settings_tab(notebook)
         self._build_users_tab(notebook)
         if not notebook.tabs():
             notebook.pack_forget()
@@ -235,6 +238,27 @@ class App:
         page = ttk.Frame(notebook, padding=18)
         self.user_management_tab = UserManagementTab(page, identity)
         notebook.add(page, text='Usuários')
+
+    def _build_settings_tab(self, notebook):
+        if not pode_acessar_aba(self.usuario_atual, 'usuarios'):
+            return
+        page = ttk.Frame(notebook, padding=18)
+        notebook.add(page, text='Configurações')
+        ttk.Label(page, text='Configurações gerais', style='Title.TLabel').pack(anchor='w')
+        ttk.Label(page, text='Pasta compartilhada pelas configurações e dados do aplicativo. '
+                  'Alterações exigem reiniciar o aplicativo.').pack(anchor='w', pady=8)
+        ttk.Label(page, text='Pasta de dados/configurações').pack(anchor='w')
+        row = ttk.Frame(page)
+        row.pack(fill='x', pady=8)
+        admin = pode_acessar_aba(self.usuario_atual, 'usuarios')
+        ttk.Entry(row, textvariable=self.app_data_dir_var, state='readonly').pack(side='left', fill='x', expand=True)
+        ttk.Button(row, text='Alterar pasta', command=self.select_app_data_dir,
+                   state='normal' if admin else 'disabled').pack(side='left', padx=8)
+        ttk.Button(row, text='Abrir pasta',
+                   command=lambda: self._open_path(Path(self.app_data_dir_var.get()))).pack(side='left')
+        sources = ttk.LabelFrame(page, text='Entrada das estampas', padding=12)
+        sources.pack(fill='x', pady=16)
+        self._source_paths_row(sources, 0)
 
     def _close_window(self):
         batch = getattr(self, 'order_batch_tab', None)
@@ -262,7 +286,7 @@ class App:
                 return
         self.root.destroy()
 
-    def _scrollable_page(self, parent):
+    def _scrollable_page(self, parent, *, stretch=False):
         container = ttk.Frame(parent)
         canvas = tk.Canvas(container, highlightthickness=0)
         scrollbar = ttk.Scrollbar(
@@ -279,10 +303,13 @@ class App:
             "<Configure>",
             lambda _event: canvas.configure(scrollregion=canvas.bbox("all")),
         )
-        canvas.bind(
-            "<Configure>",
-            lambda event: canvas.itemconfigure(page_window, width=event.width),
-        )
+        def resize_page(event):
+            options = {'width': event.width}
+            if stretch:
+                options['height'] = max(event.height, page.winfo_reqheight())
+            canvas.itemconfigure(page_window, **options)
+
+        canvas.bind("<Configure>", resize_page)
 
         return container, page, canvas
 
@@ -323,13 +350,8 @@ class App:
             "Selecionar Excel", self.select_excel
         )
         self._csv_text_row(legacy_order_fields, 2)
-        self._source_paths_row(form, 0)
         self._path_row(
-            form, 1, "Pasta de dados/configurações", self.app_data_dir_var,
-            "Alterar pasta", self.select_app_data_dir
-        )
-        self._path_row(
-            form, 2, "Pasta de saída dos pedidos", self.output_var,
+            form, 1, "Pasta de saída dos pedidos", self.output_var,
             "Selecionar saída", self.select_output
         )
 
@@ -1401,16 +1423,25 @@ class App:
             messagebox.showerror("Pasta original indisponível", str(exc))
 
     def _path_row(self, parent, row, label, variable, button_text, command):
+        output_path = variable is self.output_var or variable is self.collector_output_var
+        can_edit = pode_acessar_aba(self.usuario_atual, 'usuarios')
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=7)
-        ttk.Entry(parent, textvariable=variable).grid(
+        entry = ttk.Entry(parent, textvariable=variable, state='normal' if not output_path or can_edit else 'readonly')
+        entry.grid(
             row=row, column=1, sticky="ew", padx=10, pady=7
         )
-        ttk.Button(parent, text=button_text, command=command).grid(
+        ttk.Button(parent, text=button_text, command=command,
+                   state='normal' if not output_path or can_edit else 'disabled').grid(
             row=row, column=2, pady=7
         )
         parent.columnconfigure(1, weight=1)
+        if output_path:
+            ttk.Button(parent, text='Abrir pasta', command=lambda: self._open_path(Path(variable.get()))).grid(row=row, column=3, padx=8)
+            if can_edit:
+                entry.bind('<FocusOut>', lambda event: self._save_paths())
 
     def _source_paths_row(self, parent, row):
+        admin = pode_acessar_aba(self.usuario_atual, 'usuarios')
         ttk.Label(parent, text="Pastas de entrada das estampas").grid(
             row=row, column=0, sticky="nw", pady=7
         )
@@ -1432,15 +1463,22 @@ class App:
         button_frame = ttk.Frame(parent)
         button_frame.grid(row=row, column=2, sticky="n", pady=7)
         self.add_source_button = ttk.Button(
-            button_frame, text="Adicionar pasta", command=self.select_source
+            button_frame, text="Adicionar pasta", command=self.select_source,
+            state='normal' if admin else 'disabled',
         )
         self.add_source_button.pack(fill="x")
         self.remove_source_button = ttk.Button(
             button_frame,
             text="Remover selecionadas",
             command=self.remove_selected_sources,
+            state='normal' if admin else 'disabled',
         )
         self.remove_source_button.pack(fill="x", pady=(6, 0))
+        ttk.Button(button_frame, text='Abrir selecionadas', command=self.open_selected_sources).pack(fill='x', pady=(6, 0))
+
+    def open_selected_sources(self):
+        for index in self.source_list.curselection():
+            self._open_path(Path(self.source_dirs[index]))
 
     def _csv_text_row(self, parent, row):
         ttk.Label(parent, text="Texto CSV dos pedidos").grid(
@@ -1490,6 +1528,8 @@ class App:
             self._save_paths()
 
     def select_source(self):
+        if not pode_acessar_aba(self.usuario_atual, 'usuarios'):
+            return
         path = filedialog.askdirectory(title="Adicione uma pasta de entrada das estampas")
         if path:
             sources = [str(source) for source in normalize_source_dirs([*self.source_dirs, path])]
@@ -1508,6 +1548,8 @@ class App:
             )
 
     def remove_selected_sources(self):
+        if not pode_acessar_aba(self.usuario_atual, 'usuarios'):
+            return
         selected = list(self.source_list.curselection())
         if not selected:
             return
@@ -1543,12 +1585,16 @@ class App:
         self._save_paths()
 
     def select_output(self):
+        if not pode_acessar_aba(self.usuario_atual, 'usuarios'):
+            return
         path = filedialog.askdirectory(title="Selecione a pasta de saída")
         if path:
             self.output_var.set(path)
             self._save_paths()
 
     def select_app_data_dir(self):
+        if not pode_acessar_aba(self.usuario_atual, 'usuarios'):
+            return
         path = filedialog.askdirectory(
             title="Selecione a nova pasta de dados do software",
             parent=self.root,
@@ -1587,6 +1633,8 @@ class App:
         )
 
     def select_collector_output(self):
+        if not pode_acessar_aba(self.usuario_atual, 'usuarios'):
+            return
         path = filedialog.askdirectory(
             title="Selecione a pasta de saída das imagens"
         )
@@ -1617,7 +1665,14 @@ class App:
         compression_tab = getattr(self, "compression_tab", None)
         if compression_tab is not None:
             updated_config.update(compression_tab.preferences())
-        save_config(updated_config)
+        saved = load_config()
+        if not pode_acessar_aba(self.usuario_atual, 'usuarios'):
+            updated_config.pop('output_dir', None)
+            updated_config.pop('collector_output_dir', None)
+            updated_config.pop('source_dirs', None)
+            updated_config.pop('original_images_path', None)
+        saved.update(updated_config)
+        save_config(saved)
         # Todas as ações abertas nesta sessão passam a enxergar imediatamente a
         # mesma lista de pastas escolhida, sem exigir reinicialização.
         self.config.update(updated_config)
@@ -2417,8 +2472,10 @@ class App:
         self.visual_update_button.configure(state=state)
         self.visual_rebuild_button.configure(state=state)
         self.process_button.configure(state=state)
-        self.add_source_button.configure(state=state)
-        self.remove_source_button.configure(state=state)
+        source_state = state if pode_acessar_aba(self.usuario_atual, 'usuarios') else 'disabled'
+        if hasattr(self, 'add_source_button'):
+            self.add_source_button.configure(state=source_state)
+            self.remove_source_button.configure(state=source_state)
         self.excel_mode_button.configure(state=state)
         self.csv_mode_button.configure(state=state)
         self.collector_process_button.configure(state=state)

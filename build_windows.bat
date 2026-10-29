@@ -1,50 +1,15 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-
-set "VENV_PY=.venv\Scripts\python.exe"
-if not exist .venv (
+if exist ".venv\Scripts\python.exe" (
+    ".venv\Scripts\python.exe" build_app.py
+) else (
     where py >nul 2>nul
     if not errorlevel 1 (
-        py -3 -m venv .venv
+        py -3 build_app.py
     ) else (
-        python -m venv .venv
+        python build_app.py
     )
 )
-if not exist "%VENV_PY%" (
-    echo ERRO: nao foi possivel criar o ambiente Python.
-    pause
-    exit /b 1
-)
-
-"%VENV_PY%" -m meury_app.dependency_setup core
-if errorlevel 1 goto :erro
-"%VENV_PY%" -m PyInstaller --noconfirm --clean --windowed ^
-    --icon assets\meury-logo.ico ^
-    --add-data "assets;assets" ^
-    --add-data "meury_app/batch_order_extraction.schema.json;meury_app" ^
-  --additional-hooks-dir hooks ^
-    --hidden-import faiss ^
-    --hidden-import openai ^
-    --collect-all pypdfium2 ^
-    --collect-all pypdfium2_raw ^
-    --hidden-import google.cloud.storage ^
-    --hidden-import google.oauth2.service_account ^
-    --exclude-module torch ^
-    --exclude-module torchvision ^
-    --exclude-module transformers ^
-    --exclude-module scipy ^
-    --exclude-module sklearn ^
-    --exclude-module av ^
-    --name "MV Image" app.py
-if errorlevel 1 goto :erro
-echo.
-echo Aplicativo criado em dist\MV Image
-pause
-exit /b 0
-
-:erro
-echo.
-echo ERRO: nao foi possivel criar o aplicativo.
-pause
-exit /b 1
+set "BUILD_RESULT=%errorlevel%"
+exit /b %BUILD_RESULT%

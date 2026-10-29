@@ -1,6 +1,7 @@
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
+import json
 import os
 import subprocess
 import tempfile
@@ -126,8 +127,8 @@ class PsdTest(unittest.TestCase):
         self.assertEqual(path.read_bytes(), b"PSD bytes")
         folder = Path(result["archive"]).parent
         self.assertEqual({p.suffix for p in folder.iterdir()}, {".txt", ".7z"})
-        log = Path(result["log"]).read_text()
-        self.assertIn(str(path), log)
+        log = Path(result["log"]).read_text(encoding="utf-8")
+        self.assertIn(json.dumps(str(path), ensure_ascii=False)[1:-1], log)
         self.assertEqual(self.store.get(result["id"])["state"], "concluída")
 
     def test_warning_and_new_unique_result(self):
@@ -180,7 +181,7 @@ class PsdTest(unittest.TestCase):
         engine.validate = Mock(side_effect=RuntimeError("bad"))
         original = Path.unlink
         def fail_cleanup(path, *args, **kwargs):
-            if path.name.startswith(".incompleto-") and path.stat().st_size:
+            if path.name.startswith("incompleto-") and path.stat().st_size:
                 raise PermissionError("locked")
             return original(path, *args, **kwargs)
         with patch.object(Path, "unlink", fail_cleanup):
@@ -237,7 +238,7 @@ class PsdTest(unittest.TestCase):
         with patch("meury_app.psd_compression.SevenZip", side_effect=RuntimeError("7z indisponível")):
             result = compress(analyze(self.settings), store=self.store)
         self.assertEqual(result["state"], "falhou")
-        self.assertIn("7z indisponível", Path(result["log"]).read_text())
+        self.assertIn("7z indisponível", Path(result["log"]).read_text(encoding="utf-8"))
 
     def test_output_permission_and_redirect_reparse(self):
         with patch("meury_app.psd_search.os.access", return_value=False):

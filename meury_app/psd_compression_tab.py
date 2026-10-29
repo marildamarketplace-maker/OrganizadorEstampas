@@ -2,6 +2,7 @@
 from datetime import datetime
 from pathlib import Path
 import json
+import os
 import queue
 from copy import deepcopy
 import threading
@@ -13,7 +14,8 @@ from .compression_store import CompressionStore
 from .config import load_config, save_config
 from .image_collector import format_size
 from .index_journal import catalog_lock
-from .platform_utils import open_existing_location
+from .folder_picker import choose_directories
+from .platform_utils import open_existing_location, open_with_default_application
 from .psd_compression import compress, lock_path
 from .psd_search import Cancelled, SearchSettings, analyze, parse_names
 
@@ -51,7 +53,7 @@ class CompressionTab:
             self.source_list.insert("end", source)
         row = ttk.Frame(form)
         row.pack(fill="x", pady=5)
-        self.button(row, "Adicionar pasta", self.add_source)
+        self.button(row, "Adicionar pastas", self.add_source)
         self.button(row, "Remover selecionadas", self.remove_sources)
         ttk.Label(form, text="Nomes exatos, com ou sem .psd (linhas, vírgulas ou ponto e vírgula)").pack(anchor="w")
         self.names = tk.Text(form, height=3, wrap="word")
@@ -98,12 +100,22 @@ class CompressionTab:
         self.messages = tk.Text(parent, height=5, wrap="word", state="disabled")
         self.messages.pack(fill="x", pady=8)
         ttk.Label(parent, text="Histórico persistente (200 execuções mais recentes)").pack(anchor="w")
+        self.history_query = tk.StringVar()
+        search_row = ttk.Frame(parent)
+        search_row.pack(fill="x")
+        ttk.Label(search_row, text="Pesquisar PSD incluído (nome ou caminho)").pack(side="left")
+        search_entry = ttk.Entry(search_row, textvariable=self.history_query)
+        search_entry.pack(side="left", fill="x", expand=True, padx=5)
+        search_entry.bind("<Return>", lambda event: self.refresh_history())
+        self.button(search_row, "Pesquisar", self.refresh_history, controlled=False)
         self.history = self.tree(parent, ("início", "estado", "execução"), height=4)
         row = ttk.Frame(parent)
         row.pack(fill="x")
-        self.button(row, "Atualizar histórico", self.refresh_history, controlled=False)
-        self.button(row, "Detalhes e origens", self.history_details, controlled=False)
+        self.button(row, "Atualizar / recuperar pendentes", lambda: self.refresh_history(recover=True), controlled=False)
+        self.button(row, "Conteúdo final e análise", self.history_details, controlled=False)
         self.button(row, "Abrir saída", self.open_history, controlled=False)
+        self.button(row, "Abrir relatório", self.open_report, controlled=False)
+        ttk.Label(parent, text="O histórico registra a localização na compactação. A disponibilidade atual só é conferida ao abrir.", wraplength=760).pack(anchor="w")
         ttk.Label(parent, text="Originais são preservados. O 7z ocupa espaço adicional; não libera espaço automaticamente.", wraplength=760).pack(anchor="w", pady=8)
         for variable in (self.start, self.end, self.output):
             variable.trace_add("write", lambda *args: self.invalidate())
@@ -162,10 +174,19 @@ class CompressionTab:
         self.app.config.update(config)
 
     def add_source(self):
-        value = filedialog.askdirectory(parent=self.root)
-        if value and value not in self.sources:
+        initial = Path(self.sources[-1]).parent if self.sources else None
+        values = choose_directories(self.root, initial)
+        existing = {os.path.normcase(os.path.abspath(os.path.expanduser(value))) for value in self.sources}
+        changed = False
+        for value in values:
+            key = os.path.normcase(os.path.abspath(os.path.expanduser(value)))
+            if key in existing:
+                continue
+            existing.add(key)
             self.sources.append(value)
             self.source_list.insert("end", value)
+            changed = True
+        if changed:
             self.invalidate()
 
     def remove_sources(self):
@@ -258,7 +279,7 @@ class CompressionTab:
                     self.show_history_details(value)
                     continue
                 if kind == "open_history":
-                    self.open_location(str(Path(value["payload"]["log"]).parent))
+                    self.open_location(value["payload"]["archive"])
                     continue
                 if kind == "aux_error":
                     self.show_messages(value)
@@ -369,14 +390,15 @@ class CompressionTab:
     def refresh_history(self, recover=False):
         self.history_generation += 1
         generation = self.history_generation
+        query = self.history_query.get()
         def read():
             if recover:
                 try:
                     with catalog_lock(lock_path(self.store)):
-                        self.store.recover()
+                        self.store.recover(locked=True)
                 except RuntimeError:
                     pass  # Another instance owns a live run; it is not abandoned.
-            return generation, self.store.list()
+            return generation, self.store.list(query=query)
         self.background("history", read)
 
     def history_record(self, kind):
@@ -390,15 +412,40 @@ class CompressionTab:
     def history_details(self):
         self.history_record("details")
 
+    def open_report(self):
+        selected = self.history.selection()
+        if selected:
+            def work():
+                row = self.store.get(selected[0])
+                path = row["payload"].get("report")
+                if not path:
+                    raise ValueError("Esta execução antiga não possui relatório de conteúdo final.")
+                Path(path).stat()  # Preserve access errors; opening does not prove availability.
+                open_with_default_application(path)
+            self.background("opened", work)
+
     def show_history_details(self, row):
         dialog = tk.Toplevel(self.root)
         dialog.title(f"Compactação {row['id']} — {row['state']}")
         dialog.geometry("900x650")
-        files = row["payload"]["analysis"]["files"]
-        table = self.tree(dialog, ("nome", "origem", "interno", "decisão"))
+        notebook = ttk.Notebook(dialog)
+        notebook.pack(fill="both", expand=True)
+        final_page = ttk.Frame(notebook)
+        analysis_page = ttk.Frame(notebook)
+        notebook.add(final_page, text="PSDs efetivamente incluídos")
+        notebook.add(analysis_page, text="Análise e decisões")
+        ttk.Label(final_page, text=f"Compactado: {row['payload'].get('archive', 'não registrado')}", wraplength=850).pack(anchor="w")
+        ttk.Label(final_page, text=f"{len(row['files'])} PSDs registrados. Localizações históricas; disponibilidade atual não verificada.", wraplength=850).pack(anchor="w")
+        final_table = self.tree(final_page, ("nome", "origem", "interno", "tamanho"))
+        for item in row["files"]:
+            final_table.insert("", "end", values=(item["name"], item["original_path"], item["internal_path"], format_size(item["size"])))
+        if not row["files"]:
+            ttk.Label(final_page, text="Sem inclusão registrada por PSD. Execuções antigas preservam a análise, que não comprova inclusão.").pack(anchor="w")
+        files = row["payload"].get("analysis", {}).get("files", [])
+        table = self.tree(analysis_page, ("nome", "origem", "interno", "decisão"))
         for index, item in enumerate(files):
             table.insert("", "end", iid=str(index), values=(Path(item["path"]).name, item["path"], item["internal"], item["decision"]))
-        ttk.Button(dialog, text="Abrir localização original", command=lambda: self.open_location(files[int(table.selection()[0])]["path"]) if table.selection() else None).pack(anchor="w")
+        ttk.Button(analysis_page, text="Abrir localização original", command=lambda: self.open_location(files[int(table.selection()[0])]["path"]) if table.selection() else None).pack(anchor="w")
         text = tk.Text(dialog, wrap="word", height=15)
         text.pack(fill="both", expand=True)
         text.insert("end", json.dumps(row, ensure_ascii=False, indent=2))

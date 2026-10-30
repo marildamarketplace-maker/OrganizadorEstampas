@@ -161,6 +161,57 @@ def size_summary(original, compressed):
 
 
 def compress(analysis, cancel=lambda: False, progress=lambda *args: None, store=None, engine=None):
+    if analysis.settings.mode == "group":
+        return _compress_archive(analysis, cancel, progress, store, engine)
+    if analysis.settings.mode != "individual":
+        raise ValueError("Modo de compactação inválido.")
+    approved = deepcopy(analysis)
+    selected = [item for item in approved.files if item.selected]
+    if not selected:
+        raise ValueError("Selecione ao menos um PSD.")
+    store = store or CompressionStore()
+    # Keep the persisted "individual" mode key compatible; its unit is a folder.
+    folders = {}
+    for item in selected:
+        folders.setdefault(Path(item.path).parent, []).append(item)
+    results, errors = [], []
+    for index, (folder, items) in enumerate(folders.items()):
+        if cancel():
+            break
+        single = deepcopy(approved)
+        single.files = deepcopy(items)
+        # Each archive contains only the selected PSDs directly in this folder.
+        for item in single.files:
+            item.internal = Path(item.path).name
+        progress("Compactando por pasta", index, len(folders))
+        try:
+            for item in items:
+                signature(item)
+            result = _compress_archive(single, cancel, lambda *args: None, store, engine,
+                                       destination=folder / (folder.name + ".7z"))
+            results.append(result)
+            errors.extend(result["errors"])
+            if result["state"] == "cancelada":
+                break
+        except Exception as exc:
+            errors.append(f"{folder}: {sanitized(exc)}")
+        progress("Compactando por pasta", index + 1, len(folders))
+    published = [result for result in results if result["published"]]
+    stopped = cancel() or any(result["state"] == "cancelada" for result in results)
+    state = ("cancelada" if stopped else
+             "concluída" if len(published) == len(folders) and not errors
+             and all(result["state"] == "concluída" for result in results) else
+             "concluída com avisos" if published else "falhou")
+    return {"state": state, "log": "Consulte o histórico de cada pasta.",
+            "errors": errors, "results": results,
+            "validation": f"{len(published)}/{len(folders)} pastas compactadas. "
+                          "Arquivos já concluídos são preservados em caso de falha ou cancelamento.",
+            **size_summary(sum(result.get("original_bytes", 0) for result in published),
+                           sum(result.get("archive_bytes", 0) for result in published))}
+
+
+def _compress_archive(analysis, cancel=lambda: False, progress=lambda *args: None,
+                      store=None, engine=None, destination=None):
     store = store or CompressionStore()
     analysis = deepcopy(analysis)  # Freeze the approved manifest; never mutate UI-owned records.
     selected = [item for item in analysis.files if item.selected]
@@ -184,20 +235,30 @@ def compress(analysis, cancel=lambda: False, progress=lambda *args: None, store=
     if any("/".join(key.split("/")[:index]) in keys for key in keys for index in range(1, len(key.split("/")))):
         raise ValueError("Colisão entre arquivo e diretório no manifesto.")
     output = Path(analysis.settings.output).expanduser().resolve()
-    if any(output == Path(source).expanduser().resolve() for source in analysis.settings.sources):
+    if destination is None and any(output == Path(source).expanduser().resolve() for source in analysis.settings.sources):
         raise ValueError("Saída igual à origem")
     with catalog_lock(lock_path(store)):
         store.recover(locked=True)
-        output.mkdir(parents=True, exist_ok=True)
-        # Exclusive directory reserves the result names, including across application instances.
         identity = uuid.uuid4().hex
-        folder = output / f"compactacao_{datetime.now():%Y%m%d_%H%M%S}_{identity[:12]}"
-        folder.mkdir()
-        base = folder / folder.name
-        archive = base.with_suffix(".7z")
-        log_path = base.with_suffix(".txt")
+        if destination is None:
+            output.mkdir(parents=True, exist_ok=True)
+            folder = output / f"compactacao_{datetime.now():%Y%m%d_%H%M%S}_{identity[:12]}"
+            folder.mkdir()
+            base = folder / folder.name
+            archive = base.with_suffix(".7z")
+            log_path = base.with_suffix(".txt")
+            report_path = base.with_suffix(".conteudo.txt")
+        else:
+            archive = Path(destination)
+            folder = archive.parent
+            log_path = Path(str(archive) + ".txt")
+            report_path = Path(str(archive) + ".conteudo.txt")
+            for target in (archive, log_path, report_path):
+                if os.path.lexists(target):
+                    raise FileExistsError(f"Destino já existe; nada será sobrescrito: {target}")
+        temporary_prefix = f"incompleto-{identity}-"
         payload = {"analysis": analysis.snapshot(), "archive": str(archive), "log": str(log_path),
-                   "report": str(base.with_suffix(".conteudo.txt")),
+                   "report": str(report_path),
                    "errors": [], "validation": "Não executada", "included": 0,
                    "processed": 0, "published": False, "included_paths": []}
         state = "em andamento"
@@ -228,7 +289,7 @@ def compress(analysis, cancel=lambda: False, progress=lambda *args: None, store=
                 record(f"Versão: {payload['mechanism']}")
                 # NAS/Samba can map a leading dot to the Windows Hidden attribute,
                 # which survives renaming the temporary archive to its final name.
-                with tempfile.NamedTemporaryFile(prefix="incompleto-", suffix=".7z", dir=folder, delete=False) as reserved:
+                with tempfile.NamedTemporaryFile(prefix=temporary_prefix, suffix=".7z", dir=folder, delete=False) as reserved:
                     temporary = Path(reserved.name)
                 temporary.unlink()  # 7z creates a new container, not an empty existing file
                 total = len(selected)
@@ -284,7 +345,7 @@ def compress(analysis, cancel=lambda: False, progress=lambda *args: None, store=
                 payload["errors"].append(sanitized(exc))
             finally:
                 # 7-Zip can create additional update temporaries beside its target.
-                for leftover in folder.glob("incompleto-*"):
+                for leftover in folder.glob(temporary_prefix + "*"):
                     try:
                         leftover.unlink()
                     except OSError as exc:

@@ -37,6 +37,7 @@ class CompressionTab:
         self.external_busy = False
         self.last_progress = 0
         self.sources = list(app.config.get("compression_sources", []))
+        self.mode = tk.StringVar(value=app.config.get("compression_mode", "individual"))
         self.output = tk.StringVar(value=app.config.get("compression_output", ""))
         self.start = tk.StringVar(value=app.config.get("compression_start", ""))
         self.end = tk.StringVar(value=app.config.get("compression_end", ""))
@@ -46,6 +47,14 @@ class CompressionTab:
         ttk.Label(parent, text="Compactação de PSDs", style="Title.TLabel").pack(anchor="w")
         form = ttk.LabelFrame(parent, text="Origens e filtros", padding=12)
         form.pack(fill="x", pady=10)
+        modes = ttk.Frame(form)
+        modes.pack(fill="x", pady=5)
+        for label, value in (("Por pasta — reúne os PSDs de cada pasta (padrão)", "individual"),
+                             ("Em grupo — um .7z na pasta de saída", "group")):
+            control = ttk.Radiobutton(modes, text=label, variable=self.mode, value=value)
+            control.pack(anchor="w")
+            self.controls.append(control)
+        ttk.Label(form, text="Por pasta: salva nome-da-pasta.7z na própria pasta; saída ignorada; sem sobrescrever.").pack(anchor="w")
         self.source_list = tk.Listbox(form, height=4, selectmode="extended", exportselection=False)
         self.source_list.pack(fill="x")
         self.controls.append(self.source_list)
@@ -117,7 +126,7 @@ class CompressionTab:
         self.button(row, "Abrir relatório", self.open_report, controlled=False)
         ttk.Label(parent, text="O histórico registra a localização na compactação. A disponibilidade atual só é conferida ao abrir.", wraplength=760).pack(anchor="w")
         ttk.Label(parent, text="Originais são preservados. O 7z ocupa espaço adicional; não libera espaço automaticamente.", wraplength=760).pack(anchor="w", pady=8)
-        for variable in (self.start, self.end, self.output):
+        for variable in (self.start, self.end, self.output, self.mode):
             variable.trace_add("write", lambda *args: self.invalidate())
         self.names.edit_modified(False)
         self.invalidate()
@@ -149,7 +158,7 @@ class CompressionTab:
         return tree
 
     def settings(self):
-        return SearchSettings(tuple(self.sources), self.output.get().strip(), self.names.get("1.0", "end").strip(), self.start.get().strip(), self.end.get().strip())
+        return SearchSettings(tuple(self.sources), self.output.get().strip(), self.names.get("1.0", "end").strip(), self.start.get().strip(), self.end.get().strip(), self.mode.get())
 
     def names_changed(self, event=None):
         if self.names.edit_modified():
@@ -164,7 +173,7 @@ class CompressionTab:
 
     def preferences(self):
         value = self.settings()
-        return {"compression_sources": self.sources, "compression_output": value.output,
+        return {"compression_mode": value.mode, "compression_sources": self.sources, "compression_output": value.output,
                 "compression_names": value.names, "compression_start": value.start, "compression_end": value.end}
 
     def save(self):
@@ -257,7 +266,8 @@ class CompressionTab:
             messagebox.showwarning("Compactação de PSDs", "Selecione pelo menos um PSD.", parent=self.root)
             return
         warning = "\nAnálise INCOMPLETA: há erros de acesso; somente os resultados visíveis serão incluídos." if self.analysis.incomplete else ""
-        summary = f"Compactar {len(chosen)} PSDs ({format_size(sum(item.size for item in chosen))})?\nSaída: {self.output.get()}\nLZMA2, normal, sólido desativado.\nHomônimos selecionados serão preservados em caminhos distintos.{warning}\nOs originais serão preservados."
+        destination = "Um .7z por pasta, reunindo seus PSDs selecionados (subpastas separadas)" if self.mode.get() == "individual" else self.output.get()
+        summary = f"Compactar {len(chosen)} PSDs ({format_size(sum(item.size for item in chosen))})?\nSaída: {destination}\nLZMA2, normal, sólido desativado.\nArquivos existentes não serão sobrescritos.{warning}\nOs originais serão preservados."
         if messagebox.askyesno("Confirmar seleção", summary, parent=self.root):
             approved = deepcopy(self.analysis)
             self.start_job("compressed", lambda: compress(approved, self.cancel.is_set, self.progress, self.store))

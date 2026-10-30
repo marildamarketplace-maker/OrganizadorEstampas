@@ -183,7 +183,19 @@ listados no log da aba ao final do processamento.
 
 A aba **Compactação de PSDs** é independente do catálogo e da sincronização.
 Adicione várias pastas locais ou compartilhamentos já montados/autenticados pelo
-sistema operacional e configure a saída. A análise apenas consulta as origens;
+sistema operacional e escolha o modo:
+- **Por pasta (padrão):** gera `nome-da-pasta.7z` dentro de cada pasta que
+  contém PSDs selecionados. Reúne todos os selecionados diretamente nela;
+  subpastas geram compactados próprios. A busca aceita várias origens.
+  A pasta de saída é ignorada. Cada compactado contém somente os PSDs selecionados daquela pasta, sem
+  diretórios internos adicionais, e possui histórico próprio, log `nome-da-pasta.7z.txt`
+  e relatório `nome-da-pasta.7z.conteudo.txt`. Destinos já existentes não são sobrescritos:
+  a colisão é informada e as demais pastas continuam. Falhas são informadas no resumo;
+  cancelar preserva os compactados que já terminaram.
+- **Em grupo:** configure a pasta de saída para reunir os selecionados em um
+  único compactado, com os caminhos internos descritos abaixo.
+
+A escolha é salva para a próxima abertura. A análise apenas consulta as origens;
 não cria compactados nem copia PSDs. A gravação efetiva na saída é conferida ao
 iniciar a compactação, pois permissões anunciadas pelo sistema podem mudar.
 
@@ -197,7 +209,7 @@ iniciar a compactação, pois permissões anunciadas pelo sistema podem mudar.
 - Alterar origens, filtros ou saída exige nova análise. Somente arquivos
   selecionados e confirmados são enviados ao mecanismo de compactação.
 
-Cada execução reserva uma subpasta exclusiva na saída. Concluída a operação,
+No modo em grupo, cada execução reserva uma subpasta exclusiva na saída. Concluída a operação,
 ela contém somente um `.7z` e seu `.txt` UTF-8 de mesmo nome-base. O log é
 atualizado durante o trabalho e permanece após falha/cancelamento. Se a limpeza
 não for possível, sua localização é informada. Após encerramento abrupto,

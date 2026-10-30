@@ -37,6 +37,7 @@ class SearchSettings:
     names: str = ""
     start: str = ""
     end: str = ""
+    mode: str = "group"
 
     def bounds(self):
         try:
@@ -123,13 +124,16 @@ def safe_source(path, root):
 
 def analyze(settings, cancel=lambda: False, progress=lambda *args: None):
     low, high = settings.bounds()
-    if not settings.sources or not settings.output.strip():
+    if settings.mode not in {"group", "individual"}:
+        raise ValueError("Modo de compactação inválido.")
+    grouped = settings.mode == "group"
+    if not settings.sources or (grouped and not settings.output.strip()):
         raise ValueError("Adicione origens e informe a saída.")
-    output = Path(settings.output).expanduser().resolve()
-    ancestor = output
+    output = Path(settings.output).expanduser().resolve() if grouped else None
+    ancestor = output if grouped else Path(settings.sources[0]).expanduser().resolve()
     while not ancestor.exists() and ancestor != ancestor.parent:
         ancestor = ancestor.parent
-    if not ancestor.is_dir() or not os.access(ancestor, os.W_OK | os.X_OK):
+    if grouped and (not ancestor.is_dir() or not os.access(ancestor, os.W_OK | os.X_OK)):
         raise PermissionError(f"Destino sem permissão de gravação: {ancestor}")
     result = Analysis(settings)
     terms = {name.casefold(): name for name in parse_names(settings.names)}
@@ -139,7 +143,7 @@ def analyze(settings, cancel=lambda: False, progress=lambda *args: None):
     roots = []
     for text in settings.sources:
         root = Path(os.path.abspath(Path(text).expanduser()))
-        if root.resolve() == output:
+        if grouped and root.resolve() == output:
             raise ValueError("A saída não pode ser igual a uma origem.")
         if root not in roots:
             roots.append(root)
@@ -160,7 +164,7 @@ def analyze(settings, cancel=lambda: False, progress=lambda *args: None):
             try:
                 safe_source(directory, root)
                 # Exclude a nested destination, not a selected origin below its output parent.
-                if output.is_relative_to(root.resolve()) and (
+                if grouped and output.is_relative_to(root.resolve()) and (
                     directory.resolve() == output or output in directory.resolve().parents
                 ):
                     continue

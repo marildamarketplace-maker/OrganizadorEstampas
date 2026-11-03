@@ -83,3 +83,18 @@ A configuração do repositório público e os testes
 N → N+1 em Windows são requisitos de ativação, não substituídos
 por testes unitários. Versões antigas sem protocolo de bloqueio não devem executar
 simultaneamente sobre a mesma pasta durante a primeira migração.
+
+
+## Validação proporcional à alteração
+
+- **PR:** `Validar aplicativo Windows` executa a suíte completa (incluindo 7-Zip
+  real uma única vez), índice com 5 mil arquivos e uma repetição, previews com seis
+  imagens (JPEG/PNG/TIFF) e build Windows. Dependências usam cache do pip.
+- **main:** somente `Build signed release candidates` roda automaticamente,
+  testando e construindo uma única vez antes de criar o rascunho.
+- **Carga completa:** em Actions → Validar aplicativo Windows → Run workflow,
+  marcar `full_benchmark`. Isso usa 195 mil arquivos e três repetições.
+  Executar ao investigar desempenho ou antes de validar mudanças importantes no
+  indexador/armazenamento. Nenhuma carga de 195 mil arquivos roda por padrão.
+- Atualizações no mesmo PR cancelam a validação anterior desse PR. A publicação
+  na main mantém sua própria fila e não é cancelada durante um envio de release.

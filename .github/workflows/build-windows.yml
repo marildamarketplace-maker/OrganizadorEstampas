@@ -1,17 +1,25 @@
-name: Gerar aplicativo Windows
+name: Validar aplicativo Windows
 
 on:
   workflow_dispatch:
+    inputs:
+      full_benchmark:
+        description: 'Executar benchmark completo com 195 mil arquivos e três repetições'
+        type: boolean
+        default: false
   pull_request:
     branches:
       - main
-  push:
-    branches:
-      - main
 
+permissions:
+  contents: read
+concurrency:
+  group: windows-validation-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   build-windows:
     runs-on: windows-latest
+    timeout-minutes: 45
 
     steps:
       - name: Baixar código
@@ -21,6 +29,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
 
       - name: Instalar dependências
         run: |
@@ -31,22 +40,21 @@ jobs:
         shell: pwsh
         run: |
           $env:MEURY_APP_DATA_PATH = Join-Path $env:RUNNER_TEMP "meury-tests"
-          python -m unittest discover -s tests
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Validar índice com 195 mil arquivos em Windows
-        run: python scripts/benchmark_index.py --count 195000 --output reports/index-benchmark-windows-195k.json
-
-      - name: Validar compactação PSD com 7-Zip real
-        shell: pwsh
-        run: |
           $sevenZip = Join-Path $env:ProgramFiles "7-Zip\7z.exe"
           if (-not (Test-Path $sevenZip)) { throw "7-Zip oficial não encontrado no runner; a integração PSD é obrigatória." }
           $env:MEURY_7Z_PATH = $sevenZip
-          $env:MEURY_APP_DATA_PATH = Join-Path $env:RUNNER_TEMP "meury-psd-tests"
           $env:MEURY_PSD_VALIDATION_REPORT = Join-Path $env:GITHUB_WORKSPACE "reports/psd-compression-windows.json"
-          python -m unittest discover -s tests -p "test_psd*.py"
+          New-Item -ItemType Directory -Force reports | Out-Null
+          python -m unittest discover -s tests
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Validar índice com 5 mil arquivos em Windows
+        if: ${{ !inputs.full_benchmark }}
+        run: python scripts/benchmark_index.py --count 5000 --repeats 1 --output reports/index-benchmark-windows.json
+
+      - name: Validar índice completo com 195 mil arquivos em Windows
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.full_benchmark }}
+        run: python scripts/benchmark_index.py --count 195000 --repeats 3 --output reports/index-benchmark-windows.json
 
       - name: Disponibilizar evidência PSD Windows
         uses: actions/upload-artifact@v4
@@ -58,12 +66,12 @@ jobs:
       - name: Disponibilizar medição do índice
         uses: actions/upload-artifact@v4
         with:
-          name: index-benchmark-windows-195k
-          path: reports/index-benchmark-windows-195k.json
+          name: index-benchmark-windows
+          path: reports/index-benchmark-windows.json
           if-no-files-found: error
 
       - name: Validar previews em Windows
-        run: python scripts/benchmark_previews.py --count 60 --output reports/preview-benchmark-windows.json
+        run: python scripts/benchmark_previews.py --count 6 --output reports/preview-benchmark-windows.json
 
       - name: Disponibilizar medição dos previews
         uses: actions/upload-artifact@v4

@@ -15,7 +15,7 @@ BUNDLES = {
         ["requirements.txt"],
         [
             "openpyxl", "PIL", "openai", "faiss", "numpy", "boto3",
-            "google.cloud.storage", "dotenv", "pypdfium2",
+            "google.cloud.storage", "dotenv", "pypdfium2", "cryptography", "portalocker",
         ],
     ),
     # Mantido como alias para os atalhos de instalação já distribuídos.

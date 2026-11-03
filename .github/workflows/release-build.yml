@@ -1,0 +1,100 @@
+name: Build signed release candidates
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mv-image-release
+  cancel-in-progress: false
+jobs:
+  package:
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Assign release version
+        run: python scripts/configure_release_version.py
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Configure public trust anchor
+        shell: bash
+        env:
+          UPDATE_KEY: ${{ vars.UPDATE_PUBLIC_KEY }}
+          UPDATE_URL: ${{ vars.UPDATE_MANIFEST_URL }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from meury_app.updates import validate_url
+          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+          import base64
+          key = os.environ['UPDATE_KEY']
+          Ed25519PublicKey.from_public_bytes(base64.b64decode(key, validate=True))
+          url = validate_url(os.environ['UPDATE_URL'])
+          Path('assets/update-trust.json').write_text(json.dumps({'public_key': key, 'manifest_url': url}))
+          PY
+      - name: Test
+        shell: bash
+        run: MEURY_APP_DATA_PATH="$RUNNER_TEMP/mv-tests" python -m unittest discover -s tests
+      - name: Build native application and installers
+        run: python build_app.py
+      - name: Archive application
+        shell: bash
+        run: |
+          python - <<'PY'
+          import sys
+          from pathlib import Path
+          from meury_app import __version__
+          from scripts.package_update import package
+          source = Path('dist/MV Image')
+          package(source, Path(f'dist/MV-Image-{__version__}-win32-x86_64.zip'))
+          PY
+          python - <<'PY'
+          import shutil
+          from pathlib import Path
+          import sys
+          destination = Path('dist/initial-win32-x86_64')
+          destination.mkdir()
+          name = 'Install MV Image.exe'
+          shutil.copy2(Path('dist') / name, destination / name)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-win32-x86_64
+          path: |
+            dist/MV-Image-*.zip
+            dist/initial-*/
+          if-no-files-found: error
+  draft:
+    needs: package
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-artifacts
+          merge-multiple: true
+      - name: Assign release version
+        run: python scripts/configure_release_version.py
+      - run: python -m pip install 'cryptography>=44,<51' 'Pillow>=10.4,<13'
+      - name: Prepare signed draft
+        env:
+          GH_TOKEN: ${{ secrets.DISTRIBUTION_TOKEN }}
+          DISTRIBUTION_REPOSITORY: ${{ vars.DISTRIBUTION_REPOSITORY }}
+          UPDATE_PRIVATE_KEY: ${{ secrets.UPDATE_PRIVATE_KEY_BASE64 }}
+          UPDATE_PUBLIC_KEY: ${{ vars.UPDATE_PUBLIC_KEY }}
+        run: python scripts/publish_release_draft.py

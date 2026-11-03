@@ -8,3 +8,5 @@ numpy>=1.26,<3
 boto3>=1.35,<2
 google-cloud-storage>=2.18,<4
 python-dotenv>=1.0,<2
+cryptography>=44,<51
+portalocker>=3,<4

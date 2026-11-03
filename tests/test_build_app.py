@@ -55,7 +55,9 @@ class BuildAppTests(unittest.TestCase):
                  patch.object(build_app.sys, 'platform', platform), \
                  patch.object(build_app.Path, 'is_file', return_value=True), \
                  patch.object(build_app.Path, 'exists', return_value=True), \
-                 patch.object(build_app.subprocess, 'run') as run:
+                 patch.object(build_app.subprocess, 'run') as run, \
+                 patch('shutil.copy2'), \
+                 patch.object(build_app, 'finalize_macos_bundle'):
                 self.assertEqual(build_app.main(), 0)
                 python = str(build_app.ROOT / '.venv' / relative)
                 self.assertIn('import tkinter', run.call_args_list[0].args[0][-1])

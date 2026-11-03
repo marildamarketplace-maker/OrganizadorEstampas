@@ -14,6 +14,13 @@ from .window_mode import configure_maximized
 
 
 def solicitar_login(db_path: Path, *, root=None) -> dict | None:
+    # A newer schema must never be touched by an older binary, including login.
+    if db_path.exists():
+        from contextlib import closing
+        from .operational_store import SCHEMA_VERSION
+        with closing(sqlite3.connect(db_path.resolve().as_uri() + '?mode=ro', uri=True)) as connection:
+            if connection.execute('PRAGMA user_version').fetchone()[0] > SCHEMA_VERSION:
+                raise RuntimeError('Banco criado por uma versão mais recente.')
     owns_root = root is None
     root = root if root is not None else tk.Tk()
     root.title(f'{APP_NAME} — Entrar')
@@ -97,6 +104,19 @@ def solicitar_login(db_path: Path, *, root=None) -> dict | None:
     root.bind('<Escape>', lambda event: cancel())
     root.protocol('WM_DELETE_WINDOW', cancel)
     username_entry.focus_set()
+    # During an update, validate/migrate before enabling any user operation.
+    import os
+    if os.environ.get('MV_IMAGE_UPDATE_HEALTH'):
+        from contextlib import closing
+        from .operational_store import ensure_schema, SCHEMA_VERSION
+        from .update_install import mark_healthy
+        with closing(sqlite3.connect(db_path)) as connection:
+            if connection.execute('PRAGMA user_version').fetchone()[0] > SCHEMA_VERSION:
+                raise RuntimeError('Banco criado por uma versão mais recente.')
+            ensure_schema(connection)
+            connection.commit()
+        root.update_idletasks()
+        mark_healthy()
     root.mainloop()
     for callback_id in callbacks:
         root.after_cancel(callback_id)

@@ -30,7 +30,7 @@ class LocalIndexActionTest(unittest.TestCase):
 
     def test_ui_does_not_offer_local_ai_keyword_batch(self):
         source = inspect.getsource(App)
-        self.assertIn('text="Mapear estampas"', source)
+        self.assertIn('"mapear_estampas", "Mapear estampas"', source)
         self.assertNotIn('text="Organizar pedidos"', source)
         self.assertNotIn('notebook.add(search_tab, text="Pesquisar Artes")', source)
         self.assertNotIn("Gerar Palavras-chave com IA", source)

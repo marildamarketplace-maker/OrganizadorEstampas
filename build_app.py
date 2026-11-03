@@ -2,6 +2,7 @@
 from pathlib import Path
 import subprocess
 import sys
+import os
 
 ROOT = Path(__file__).resolve().parent
 
@@ -22,7 +23,23 @@ def build_command(python, platform):
         command.extend(['--collect-all', module])
     for module in ('torch', 'torchvision', 'transformers', 'scipy', 'sklearn', 'av'):
         command.extend(['--exclude-module', module])
+    if platform == 'darwin':
+        command.extend(['--osx-bundle-identifier', 'com.meuryshop.mvimage'])
+    if platform == 'darwin' and os.environ.get('MV_IMAGE_CODESIGN_IDENTITY'):
+        command.extend(['--codesign-identity', os.environ['MV_IMAGE_CODESIGN_IDENTITY']])
     return command + ['--name', 'MV Image', 'app.py']
+
+
+def finalize_macos_bundle(output):
+    import plistlib
+    from meury_app import __version__
+    plist = output / 'Contents' / 'Info.plist'
+    metadata = plistlib.loads(plist.read_bytes())
+    metadata.update(CFBundleShortVersionString=__version__, CFBundleVersion=__version__)
+    plist.write_bytes(plistlib.dumps(metadata))
+    subprocess.run(['codesign', '--force', '--deep', '--sign',
+                    os.environ.get('MV_IMAGE_CODESIGN_IDENTITY', '-'), str(output)],
+                   check=True, cwd=ROOT)
 
 
 def main():
@@ -58,6 +75,23 @@ def main():
             logo = resources / 'assets' / filename
             if not logo.is_file():
                 raise ValueError(f'O aplicativo gerado está sem a logo obrigatória da MV: {logo}')
+        native_signing = (['--codesign-identity', os.environ['MV_IMAGE_CODESIGN_IDENTITY']]
+                          if platform == 'darwin' and os.environ.get('MV_IMAGE_CODESIGN_IDENTITY') else [])
+        helper_name = 'MV Image Updater'
+        subprocess.run([str(python), '-m', 'PyInstaller', '--noconfirm', '--clean',
+                        '--onefile', *native_signing, '--name', helper_name,
+                        '--add-data', f"assets{';' if platform == 'win32' else ':'}assets",
+                        'update_helper.py'], check=True, cwd=ROOT)
+        import shutil
+        helper_file = ROOT / 'dist' / (helper_name + ('.exe' if platform == 'win32' else ''))
+        helper_destination = (output.parent / '_internal' if platform == 'win32'
+                              else output / 'Contents' / 'Frameworks')
+        shutil.copy2(helper_file, helper_destination / helper_file.name)
+        subprocess.run([str(python), '-m', 'PyInstaller', '--noconfirm', '--clean',
+                        '--onefile', *native_signing, '--name', 'Install MV Image',
+                        'scripts/install_app.py'], check=True, cwd=ROOT)
+        if platform == 'darwin':
+            finalize_macos_bundle(output)
         print(f'Aplicativo criado em {output}')
         return 0
     except (OSError, ValueError, subprocess.CalledProcessError) as exc:

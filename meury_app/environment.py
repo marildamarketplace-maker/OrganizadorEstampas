@@ -11,7 +11,8 @@ def environment_file_candidates() -> list[Path]:
     if getattr(sys, "frozen", False):
         # Não aceite primeiro um .env do diretório corrente: abrir o executável
         # por um atalho/pasta não confiável poderia injetar endpoints e chaves.
-        candidates = [Path(sys.executable).resolve().parent / ".env"]
+        candidates = [Path.home() / ".meury_organizador_estampas" / ".env",
+                      Path(sys.executable).resolve().parent / ".env"]
     else:
         project_file = Path(__file__).resolve().parent.parent / ".env"
         candidates = [project_file, Path.cwd() / ".env"]

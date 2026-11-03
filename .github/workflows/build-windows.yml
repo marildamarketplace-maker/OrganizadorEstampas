@@ -2,6 +2,9 @@ name: Gerar aplicativo Windows
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches:
+      - main
   push:
     branches:
       - main
@@ -70,7 +73,7 @@ jobs:
           if-no-files-found: error
 
       - name: Gerar aplicativo
-        run: pyinstaller --noconfirm --clean --windowed --icon assets/meury-logo.ico --add-data "assets;assets" --add-data "meury_app/batch_order_extraction.schema.json;meury_app" --additional-hooks-dir hooks --collect-all pypdfium2 --collect-all pypdfium2_raw --name "MV Image" app.py
+        run: python build_app.py
 
       - name: Disponibilizar aplicativo
         uses: actions/upload-artifact@v4

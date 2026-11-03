@@ -9,11 +9,11 @@ from meury_app.environment import environment_file_candidates
 
 
 class EnvironmentTest(unittest.TestCase):
-    def test_frozen_app_only_trusts_env_beside_executable(self):
+    def test_frozen_app_trusts_per_user_env_and_legacy_executable_env(self):
         with patch("meury_app.environment.sys.frozen", True, create=True), \
              patch("meury_app.environment.sys.executable", "/Aplicativo/app.exe"):
             candidates = environment_file_candidates()
-        self.assertEqual(candidates, [Path("/Aplicativo/.env").resolve()])
+        self.assertEqual(candidates, [(Path.home() / ".meury_organizador_estampas/.env").resolve(), Path("/Aplicativo/.env").resolve()])
 
     def test_loads_env_from_current_directory(self):
         with tempfile.TemporaryDirectory() as temporary:

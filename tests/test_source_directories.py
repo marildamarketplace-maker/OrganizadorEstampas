@@ -25,6 +25,7 @@ class SourceDirectoriesTest(unittest.TestCase):
 
     def app(self, sources):
         app = App.__new__(App)
+        app.usuario_atual = {"permissoes": ["admin"]}
         app.source_dirs = [str(source) for source in sources]
         app.config = {"source_dirs": list(app.source_dirs)}
         for attribute in (
@@ -58,7 +59,7 @@ class SourceDirectoriesTest(unittest.TestCase):
         app._save_paths()
         with ExitStack() as patches:
             patches.enter_context(patch.dict("os.environ", {"ORIGINAL_IMAGES_PATH": "/old"}))
-            for target in ("tk.Tk", "tk.StringVar", "tk.BooleanVar", "ThumbnailCache"):
+            for target in ("tk.Tk", "tk.StringVar", "tk.BooleanVar", "ThumbnailCache", "apply_app_icon"):
                 patches.enter_context(patch("meury_app.ui." + target))
             for method in (
                 "_build_style", "_build_ui", "_try_load_saved_index",
@@ -66,7 +67,7 @@ class SourceDirectoriesTest(unittest.TestCase):
                 "_refresh_catalog_statistics",
             ):
                 patches.enter_context(patch.object(App, method))
-            restarted = App()
+            restarted = App(usuario_atual={"permissoes": ["admin"]})
         self.assertEqual(restarted.source_dirs, [str(self.first), str(self.second)])
         self.assertEqual(restarted.root_path_error, "")
 

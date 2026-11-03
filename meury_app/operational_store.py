@@ -39,7 +39,9 @@ def _connect(db_path: Path) -> sqlite3.Connection:
 
 
 def ensure_schema(connection: sqlite3.Connection) -> None:
-    connection.executescript(
+    if connection.execute("PRAGMA user_version").fetchone()[0] > SCHEMA_VERSION:
+        raise RuntimeError("Banco criado por uma versão mais recente do aplicativo.")
+    schema_sql = (
         """
         CREATE TABLE IF NOT EXISTS image_state (
             source INTEGER NOT NULL,
@@ -120,6 +122,12 @@ def ensure_schema(connection: sqlite3.Connection) -> None:
         );
         """
     )
+    if not connection.in_transaction:
+        connection.execute('BEGIN IMMEDIATE')
+    for statement in schema_sql.split(';'):
+        if statement.strip():
+            connection.execute(statement)
+
     columns = {
         str(row[1]) for row in connection.execute("PRAGMA table_info(image_state)")
     }

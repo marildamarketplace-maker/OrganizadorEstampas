@@ -55,10 +55,10 @@ def extract(package, destination):
         if len(archive.infolist()) > 100000:
             raise ValueError('Pacote contém arquivos demais.')
         for info in archive.infolist():
-            name = info.filename
+            name = info.orig_filename
             parts = name.split('/')
             mode = info.external_attr >> 16
-            if '\\' in name or name.startswith('/') or any(p in ('..', '.') or ':' in p for p in parts):
+            if '\x00' in name or '\\' in name or name.startswith('/') or any(p in ('..', '.') or ':' in p for p in parts):
                 raise ValueError('Caminho inseguro no pacote.')
             total += info.file_size
             if total > 12 * 1024**3:

@@ -25,16 +25,18 @@ def locate():
     for name in bundled_names:
         if (bundle / name).is_file():
             return str(bundle / name)
-    path_names = ("7z.exe", "7za.exe") if sys.platform == "win32" else ("7zz", "7z", "7za")
-    for name in path_names:
-        found = shutil.which(name)
-        if found and Path(found).resolve().parent != Path.cwd().resolve():
-            return found
+    # Chocolatey PATH shims spawn another process: terminating the shim leaves
+    # the actual compressor holding stdin and temporary archives open.
     if sys.platform == "win32":
         for variable in ("ProgramFiles", "ProgramFiles(x86)"):
             base = os.environ.get(variable)
             if base and (Path(base) / "7-Zip" / "7z.exe").is_file():
                 return str(Path(base) / "7-Zip" / "7z.exe")
+    path_names = ("7z.exe", "7za.exe") if sys.platform == "win32" else ("7zz", "7z", "7za")
+    for name in path_names:
+        found = shutil.which(name)
+        if found and Path(found).resolve().parent != Path.cwd().resolve():
+            return found
     raise RuntimeError("7-Zip não encontrado. Configure MEURY_7Z_PATH com o caminho absoluto do 7zz/7za.exe/7z.exe. Consulte o README.")
 
 

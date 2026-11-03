@@ -28,7 +28,7 @@ class PlatformContractsTest(unittest.TestCase):
                  patch.dict(os.environ, {"MEURY_7Z_PATH": ""}):
                 self.assertEqual(locate(), str(self.vendor / name))
 
-    def test_windows_path_discovery_uses_exe_and_program_files(self):
+    def test_windows_prefers_native_installation_over_path_shims(self):
         program_files = self.root / "Program Files"
         executable = program_files / "7-Zip" / "7z.exe"
         executable.parent.mkdir(parents=True)
@@ -36,9 +36,9 @@ class PlatformContractsTest(unittest.TestCase):
         with patch("meury_app.sevenzip.sys.platform", "win32"), \
              patch("meury_app.sevenzip.sys._MEIPASS", str(self.root), create=True), \
              patch.dict(os.environ, {"MEURY_7Z_PATH": "", "ProgramFiles": str(program_files)}), \
-             patch("meury_app.sevenzip.shutil.which", return_value=None) as which:
+             patch("meury_app.sevenzip.shutil.which", return_value="C:/chocolatey/bin/7z.exe") as which:
             self.assertEqual(locate(), str(executable))
-        self.assertEqual([call.args[0] for call in which.call_args_list], ["7z.exe", "7za.exe"])
+        which.assert_not_called()
 
     def test_windows_process_options_do_not_use_posix_session(self):
         process = Mock()

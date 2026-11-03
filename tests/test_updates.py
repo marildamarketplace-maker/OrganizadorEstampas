@@ -79,7 +79,9 @@ class UpdateTests(unittest.TestCase):
                 root = Path(temporary)
                 package = root / 'bad.zip'
                 with zipfile.ZipFile(package, 'w') as archive:
-                    archive.writestr(filename, 'bad')
+                    info = zipfile.ZipInfo(filename)
+                    info.filename = filename  # Preserve raw separators on Windows too.
+                    archive.writestr(info, 'bad')
                 with self.assertRaises(ValueError):
                     extract(package, root / 'out')
         with tempfile.TemporaryDirectory() as temporary:

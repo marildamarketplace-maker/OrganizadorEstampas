@@ -557,9 +557,14 @@ No JSON, código e nome são combinados com hífens nas pastas. Por exemplo:
 Por isso, `clienteCodigo`, `clienteNome`, `tecidoCodigo` e `tecidoNome` são
 obrigatórios.
 
-## Processamento de vários PDFs pelo Codex
+## Processamento de pedidos PDF e imagens pelo Codex
 
-1. Coloque os pedidos em `pedidos_pdf/entrada`.
+1. Coloque os pedidos PDF, JPG, JPEG ou PNG em `pedidos_pdf/entrada`.
+   Para imagens de várias páginas, use `20000000_1.jpg`, `20000000_2.png` etc.,
+   com numeração contínua começando em 1. Uma imagem única pode ser `20000000.jpg`.
+   Cada grupo gera uma única separação. Não misture PDF e imagens do mesmo pedido,
+   nem uma imagem sem sufixo com páginas numeradas. A aba **Separar pedidos** também
+   usa esse fluxo e mostra os grupos e eventuais problemas de nomenclatura.
 2. Execute `./pedidos_pdf/processar_pedidos_lote_mac.sh` no macOS ou
    `pedidos_pdf\processar_pedidos_lote_windows.bat` no Windows.
 3. Consulte a pasta mais recente em `pedidos_pdf/relatorios`.
@@ -573,7 +578,7 @@ Pedidos já concluídos continuam reconhecidos pelo histórico. Ao colocar novam
 mesmo PDF na entrada, a extração salva é reaproveitada e a pasta do pedido é criada
 novamente; os pendentes também são retomados.
 
-Antes dos PDFs, o lote pergunta se deseja sincronizar/atualizar o índice. Responda
+Antes dos documentos, o lote pergunta se deseja sincronizar/atualizar o índice. Responda
 `N` para carregar o índice já salvo e seguir direto para a separação das imagens,
 sem varrer as pastas de estampas. Caso ainda não exista um índice salvo compatível,
 o lote informa que é necessário executá-lo novamente e responder `S`.

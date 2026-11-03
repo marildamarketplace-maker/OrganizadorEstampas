@@ -44,7 +44,7 @@ class BatchActionReportTest(unittest.TestCase):
                     "Estampa com mais de um arquivo candidato: 4896-C",
                 ],
                 "acoes": [
-                    "Conferir os códigos/variantes no PDF e cadastrar ou disponibilizar "
+                    "Conferir os códigos/variantes no documento e cadastrar ou disponibilizar "
                     "os arquivos de estampa ausentes antes de reprocessar.",
                     "Escolher o arquivo correto de cada estampa duplicada, corrigir a "
                     "duplicidade no catálogo e reprocessar.",

@@ -3,6 +3,7 @@ from pathlib import Path
 import subprocess
 from tkinter import messagebox, ttk
 
+from .order_documents import discover_documents
 from .platform_utils import open_existing_location, open_with_default_application
 
 
@@ -15,9 +16,8 @@ def list_pdfs(project: Path, folder: str) -> list[Path]:
     directory = Path(project).expanduser().resolve() / 'pedidos_pdf' / folder
     if not directory.exists():
         return []
-    return sorted((path for path in directory.iterdir()
-                   if path.is_file() and not path.is_symlink() and path.suffix.casefold() == '.pdf'),
-                  key=lambda path: path.name.casefold())
+    return [path for document in discover_documents(directory) for path in document.pages]
+
 
 
 class OrderPdfPanel:
@@ -29,8 +29,8 @@ class OrderPdfPanel:
         self.paths = {}
         toolbar = ttk.Frame(parent)
         toolbar.pack(fill='x', pady=(6, 4))
-        ttk.Label(toolbar, text='PDFs dos pedidos').pack(side='left')
-        ttk.Button(toolbar, text='Atualizar PDFs', command=self.refresh).pack(side='right')
+        ttk.Label(toolbar, text='Documentos dos pedidos').pack(side='left')
+        ttk.Button(toolbar, text='Atualizar arquivos', command=self.refresh).pack(side='right')
         panels = ttk.Frame(parent)
         panels.pack(fill='x')
         panels.columnconfigure(0, weight=1)
@@ -41,9 +41,11 @@ class OrderPdfPanel:
             self.frames[folder] = frame
             listing = ttk.Frame(frame)
             listing.pack(fill='both', expand=True)
-            table = ttk.Treeview(listing, columns=('pdf',), show='headings', height=5, selectmode='browse')
-            table.heading('pdf', text='Arquivo PDF — duplo clique para abrir')
+            table = ttk.Treeview(listing, columns=('pdf', 'grupo'), show='headings', height=5, selectmode='browse')
+            table.heading('pdf', text='Arquivo do pedido — duplo clique para abrir')
             table.column('pdf', width=250)
+            table.heading('grupo', text='Pedido / validação')
+            table.column('grupo', width=180)
             scroll = ttk.Scrollbar(listing, command=table.yview)
             table.configure(yscrollcommand=scroll.set)
             table.pack(side='left', fill='both', expand=True)
@@ -53,7 +55,7 @@ class OrderPdfPanel:
             table.bind('<Return>', lambda event, key=folder: self.open_pdf(key))
             buttons = ttk.Frame(frame)
             buttons.pack(fill='x', pady=(4, 0))
-            ttk.Button(buttons, text='Abrir PDF', command=lambda key=folder: self.open_pdf(key)).pack(side='left')
+            ttk.Button(buttons, text='Abrir arquivo', command=lambda key=folder: self.open_pdf(key)).pack(side='left')
             ttk.Button(buttons, text='Abrir pasta', command=lambda key=folder: self.open_folder(key)).pack(side='left', padx=6)
         self.refresh()
 
@@ -70,10 +72,13 @@ class OrderPdfPanel:
                 self.frames[folder].configure(text=f'{title} — indisponível')
                 continue
             self.frames[folder].configure(text=f'{title} ({len(files)})')
+            groups = {path: document for document in discover_documents(
+                Path(self.project.get()).expanduser().resolve() / 'pedidos_pdf' / folder)
+                for path in document.pages}
             for i, path in enumerate(files):
                 key = str(i)
                 self.paths[folder][key] = path
-                table.insert('', 'end', iid=key, values=(path.name,))
+                table.insert('', 'end', iid=key, values=(path.name, groups[path].identifier + (' — ' + groups[path].error if groups[path].error else '')))
                 if path == previous:
                     table.selection_set(key)
 
@@ -86,10 +91,10 @@ class OrderPdfPanel:
         try:
             expected = (Path(self.project.get()).expanduser().resolve() / 'pedidos_pdf' / folder).resolve()
             if path.resolve().parent != expected or path.is_symlink() or not path.is_file():
-                raise ValueError('O PDF não está mais disponível nessa pasta. Atualize a lista.')
+                raise ValueError('O arquivo não está mais disponível nessa pasta. Atualize a lista.')
             open_with_default_application(path)
         except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
-            messagebox.showerror('PDF indisponível', str(exc), parent=self.app.root)
+            messagebox.showerror('Arquivo indisponível', str(exc), parent=self.app.root)
 
     def open_folder(self, folder):
         try:

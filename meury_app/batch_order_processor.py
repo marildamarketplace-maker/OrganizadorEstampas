@@ -25,6 +25,7 @@ from typing import Any, Callable, Dict, Iterable, List, Sequence
 if __package__ in {None, ""}:  # Compatibilidade com execução direta deste arquivo.
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from meury_app.order_documents import OrderDocument, discover_documents, prepare_document, move_document
 from meury_app.batch_output import print
 from meury_app.config import load_config, configured_app_dir
 from meury_app.user_store import autenticar_usuario
@@ -234,7 +235,7 @@ def print_terminal_final_log(content: str) -> None:
             print(terminal_text(
                 line, color="green", bold=stripped.startswith("Tudo certo"),
             ))
-        elif stripped.startswith("PDFs:"):
+        elif stripped.startswith("Documentos:"):
             print(terminal_text(line, bold=True))
         elif stripped.startswith("-"):
             print(terminal_text(line, color="yellow"))
@@ -887,11 +888,15 @@ def extract_with_fallback(
         ) from api_exc
 
 
-def extract_in_temporary_folder(*, temporary_folder: Path | None, **kwargs):
+def extract_in_temporary_folder(*, temporary_folder: Path | None, document=None, **kwargs):
     with tempfile.TemporaryDirectory(prefix='pedido-', dir=temporary_folder) as directory:
         workspace = Path(directory)
         local_pdf = workspace / Path(kwargs['pdf_path']).name
-        shutil.copyfile(kwargs['pdf_path'], local_pdf)
+        if document is None:
+            shutil.copyfile(kwargs['pdf_path'], local_pdf)
+        else:
+            local_pdf = workspace / 'pedido-imagens.pdf'
+            prepare_document(document, local_pdf)
         kwargs['pdf_path'] = local_pdf
         kwargs['project'] = workspace
         return extract_with_fallback(**kwargs)
@@ -1019,7 +1024,7 @@ def validation_requirements(result: Dict[str, Any]) -> tuple[List[str], List[str
             f"Estampa não encontrada: {_human_value(value)}" for value in missing
         )
         actions.append(
-            "Conferir os códigos/variantes no PDF e cadastrar ou disponibilizar "
+            "Conferir os códigos/variantes no documento e cadastrar ou disponibilizar "
             "os arquivos de estampa ausentes antes de reprocessar."
         )
 
@@ -1040,7 +1045,7 @@ def validation_requirements(result: Dict[str, Any]) -> tuple[List[str], List[str
             f"Erro de processamento: {_human_value(value)}" for value in errors
         )
         actions.append(
-            "Corrigir o erro informado, confirmar os dados do pedido e reprocessar o PDF."
+            "Corrigir o erro informado, confirmar os dados do pedido e reprocessar o documento."
         )
 
     outcome = str(result.get("resultadoFinal", "FALHA")).upper()
@@ -1097,7 +1102,7 @@ def write_final_action_log(
 
     lines = [
         "RESUMO DOS PEDIDOS",
-        f"PDFs: {len(rows)} | Com pendências: {len(pending)} | Sem pendências: {len(clear)}",
+        f"Documentos: {len(rows)} | Com pendências: {len(pending)} | Sem pendências: {len(clear)}",
     ]
     if pending:
         lines.extend(["", "O QUE PRECISA SER FEITO"])
@@ -1105,7 +1110,7 @@ def write_final_action_log(
         lines.extend(["", "Tudo certo. Nenhuma ação necessária."])
 
     for row in pending:
-        filename = _human_value(row.get("arquivo") or "PDF não informado")
+        filename = _human_value(row.get("arquivo") or "Documento não informado")
         order = _human_value(row.get("pedido") or "")
         label = filename
         if order and Path(filename).stem != order:
@@ -1123,15 +1128,15 @@ def write_final_action_log(
                 )))
             elif reason.startswith("Erro de processamento: "):
                 errors.append(reason.removeprefix("Erro de processamento: "))
-            elif reason.startswith("PDF não foi movido para concluído:"):
-                move_errors.append(reason.removeprefix("PDF não foi movido para concluído:").strip())
+            elif reason.startswith(("Documento não foi movido para concluído:", "PDF não foi movido para concluído:")):
+                move_errors.append(reason.split(":", 1)[1].strip())
             else:
                 other.append(reason)
         list_action("Localizar estampas", missing)
         list_action("Escolher o arquivo correto", duplicates)
         list_action("Corrigir o erro", errors)
         if move_errors:
-            lines.append("  - Mover o PDF para a pasta entrada/concluido; o pedido já foi separado.")
+            lines.append("  - Mover o documento para a pasta entrada/concluido; o pedido já foi separado.")
             lines.append(wrapped(f"    Motivo: {', '.join(move_errors)}."))
         for reason in other:
             lines.append(wrapped(f"  - Conferir: {reason}"))
@@ -1140,10 +1145,10 @@ def write_final_action_log(
         for action in row.get("acoes") or []:
             text = _human_value(action)
             if (
-                (missing and text.startswith("Conferir os códigos/variantes no PDF"))
+                (missing and text.startswith("Conferir os códigos/variantes no documento"))
                 or (duplicates and text.startswith("Escolher o arquivo correto de cada estampa duplicada"))
                 or (errors and text.startswith("Corrigir o erro informado,"))
-                or (move_errors and text.startswith("Mover manualmente o PDF"))
+                or (move_errors and text.startswith("Mover manualmente o documento"))
             ):
                 continue
             lines.append(wrapped(f"  - {text}"))
@@ -1155,12 +1160,12 @@ def write_final_action_log(
             if detail_files:
                 lines.append(wrapped(f"    Consultar detalhes: {', '.join(detail_files)}."))
             elif not row.get("validacoes"):
-                lines.append("  - Consultar o log deste PDF para identificar o problema.")
+                lines.append("  - Consultar o log deste documento para identificar o problema.")
 
     if clear:
         names = []
         for row in clear:
-            name = _human_value(row.get("arquivo") or row.get("pedido") or "PDF não informado")
+            name = _human_value(row.get("arquivo") or row.get("pedido") or "Documento não informado")
             if row.get("resultado") == "JÁ PROCESSADO":
                 name += " (já processado)"
             names.append(name)
@@ -1249,11 +1254,17 @@ def run_batch(project: Path, *, codex_path: str = '', update_index: bool,
     run_dir.mkdir(parents=True, exist_ok=True)
 
     successful_records = load_successful_records(history_path)
-    pdfs = sorted(
-        (path for path in input_dir.iterdir() if path.is_file() and path.suffix.casefold() == ".pdf"),
-        key=lambda path: path.name.casefold(),
-    )
-    pdf_digests = {pdf_path: file_hash(pdf_path) for pdf_path in pdfs}
+    documents = discover_documents(input_dir)
+    document_by_path = {document.pages[0]: document for document in documents}
+    pdfs = list(document_by_path)
+    pdf_digests = {}
+    for path, document in list(document_by_path.items()):
+        try:
+            pdf_digests[path] = file_hash(path) if document.is_pdf else document.digest()
+        except OSError as exc:
+            document_by_path[path] = OrderDocument(document.identifier, document.pages,
+                                                   f'Não foi possível ler o documento: {exc}')
+            pdf_digests[path] = hashlib.sha256(str(path).encode()).hexdigest()
     success_rows: List[Dict[str, Any]] = []
     failure_rows: List[Dict[str, Any]] = []
     skipped_rows: List[Dict[str, Any]] = []
@@ -1264,7 +1275,7 @@ def run_batch(project: Path, *, codex_path: str = '', update_index: bool,
         if not pdfs:
             if update_index:
                 ensure_daily_index()
-            print(f"Nenhum PDF encontrado em: {input_dir}")
+            print(f"Nenhum documento encontrado em: {input_dir}")
         else:
             # Mesmo PDFs concluídos precisam passar novamente pela criação do pedido.
             # A extração salva continua sendo reutilizada, mas a pasta de saída pode
@@ -1279,6 +1290,7 @@ def run_batch(project: Path, *, codex_path: str = '', update_index: bool,
         return 1
 
     for position, pdf_path in enumerate(pdfs, start=1):
+        document = document_by_path[pdf_path]
         digest = pdf_digests[pdf_path]
         print("")
         print(terminal_text("-" * TERMINAL_WIDTH, color="blue"))
@@ -1302,6 +1314,8 @@ def run_batch(project: Path, *, codex_path: str = '', update_index: bool,
             extraction: Dict[str, Any] = {}
             extraction_provider = ""
             extraction_model = ""
+            if document.error:
+                raise ValueError(document.error)
             if extraction_path.exists():
                 try:
                     cached = json.loads(extraction_path.read_text(encoding="utf-8"))
@@ -1314,7 +1328,7 @@ def run_batch(project: Path, *, codex_path: str = '', update_index: bool,
             legacy_extraction_path = (
                 project / "tmp" / "pdfs" / pdf_path.stem / "pedido.json"
             )
-            if not extraction and legacy_extraction_path.exists():
+            if document.is_pdf and not extraction and legacy_extraction_path.exists():
                 try:
                     legacy = json.loads(
                         legacy_extraction_path.read_text(encoding="utf-8")
@@ -1345,6 +1359,7 @@ def run_batch(project: Path, *, codex_path: str = '', update_index: bool,
                 print("  Aguardando extração do Codex...", flush=True)
                 extraction, extraction_provider, extraction_model = extract_in_temporary_folder(
                     temporary_folder=temporary_folder,
+                    document=None if document.is_pdf else document,
                     codex=codex,
                     project=project,
                     pdf_path=pdf_path,
@@ -1388,13 +1403,15 @@ def run_batch(project: Path, *, codex_path: str = '', update_index: bool,
         reported_outcome = str(result.get("resultadoFinal", "FALHA")).upper()
         outcome = "SUCESSO" if reported_outcome == "SUCESSO" else "FALHA"
         result["resultadoFinal"] = outcome
+        result["arquivosOrigem"] = [path.name for path in document.pages]
         final_path.write_text(
             json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
         validations, actions = validation_requirements(result)
         row = {
-            "arquivo": pdf_path.name,
+            "arquivo": " | ".join(path.name for path in document.pages),
+            "arquivosOrigem": [path.name for path in document.pages],
             "pedido": result.get("pedido", ""),
             "resultado": outcome,
             "dataProcessamento": now_iso(),
@@ -1420,14 +1437,18 @@ def run_batch(project: Path, *, codex_path: str = '', update_index: bool,
 
         if outcome in FINAL_SUCCESS:
             try:
-                completed_path = move_to_completed(pdf_path, completed_dir)
-                history_record["pdfConcluido"] = str(completed_path)
-                print(f"  PDF movido para: {completed_path}")
+                completed_paths = ([move_to_completed(pdf_path, completed_dir)] if document.is_pdf
+                                   else move_document(document, completed_dir))
+                completed_path = completed_paths[0]
+                history_record["arquivosConcluidos"] = [str(path) for path in completed_paths]
+                if document.is_pdf:
+                    history_record["pdfConcluido"] = str(completed_path)
+                print(f"  Documento movido para: {completed_path}")
             except OSError as exc:
                 print(f"  AVISO: não foi possível mover o PDF concluído: {exc}")
-                row["validacoes"].append(f"PDF não foi movido para concluído: {exc}")
+                row["validacoes"].append(f"Documento não foi movido para concluído: {exc}")
                 row["acoes"].append(
-                    "Mover manualmente o PDF para a pasta 'concluido' e verificar "
+                    "Mover manualmente o documento para a pasta 'concluido' e verificar "
                     "permissões ou bloqueios no arquivo."
                 )
                 row["detalhes"] = " | ".join(row["validacoes"])
@@ -1436,7 +1457,7 @@ def run_batch(project: Path, *, codex_path: str = '', update_index: bool,
             successful_records[digest] = history_record
         else:
             failure_rows.append(row)
-            print("  Este PDF será tentado novamente no próximo lote.")
+            print("  Este documento será tentado novamente no próximo lote.")
         processed_rows.append(row)
         append_history(history_path, history_record)
 

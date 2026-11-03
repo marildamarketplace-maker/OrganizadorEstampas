@@ -24,7 +24,7 @@ class OrderBatchTests(unittest.TestCase):
                  patch('meury_app.batch_order_processor.choose_index_update', side_effect=AssertionError('pergunta pertence à UI')):
                 logs = []
                 self.assertEqual(executar_lote(self.project, self.db, self.admin, update_index=update, log=logs.append), 0)
-                self.assertIn('Nenhum PDF encontrado', ''.join(logs))
+                self.assertIn('Nenhum documento encontrado', ''.join(logs))
                 self.assertTrue(list(self.project.glob('pedidos_pdf/relatorios/*/LOG_FINAL_ACAO_HUMANA.txt')))
                 self.assertEqual(index.called, update)
                 self.assertFalse((self.project / 'pedidos_pdf/.controle/em_execucao').exists())
@@ -73,6 +73,9 @@ class BatchTabTests(unittest.TestCase):
     def test_cancelling_question_does_not_start_work(self):
         tab = OrderBatchTab.__new__(OrderBatchTab)
         tab.app = Mock()
+        tab.can_edit_paths = False
+        tab.temporary_folder = Mock()
+        tab.temporary_folder.get.return_value = tempfile.gettempdir()
         tab.worker = None
         tab.project = Mock()
         tab.project.get.return_value = '/tmp/lote'

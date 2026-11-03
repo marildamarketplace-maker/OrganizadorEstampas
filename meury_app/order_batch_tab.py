@@ -26,7 +26,7 @@ class OrderBatchTab:
         self.report_reader = None
         default = APP_DIR / 'lotes' if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent.parent
         self.project = tk.StringVar(master=parent, value=load_config().get('order_batch_folder', str(default)))
-        self.status = tk.StringVar(master=parent, value='Coloque os PDFs em pedidos_pdf/entrada e inicie o lote.')
+        self.status = tk.StringVar(master=parent, value='Coloque PDFs, JPGs, JPEGs ou PNGs em pedidos_pdf/entrada e inicie o lote.')
         ttk.Label(parent, text='Separar pedidos', style='Title.TLabel').pack(anchor='w')
         ttk.Label(parent, text='Mesmo processamento do lote: extração, separação, histórico e relatórios.').pack(anchor='w', pady=8)
         ttk.Label(parent, text='Pasta do lote (contém pedidos_pdf/entrada e pedidos_pdf/relatorios)').pack(anchor='w')
@@ -38,7 +38,7 @@ class OrderBatchTab:
         self.choose_button.pack(side='left')
         self.temporary_folder = tk.StringVar(master=parent, value=load_config().get(
             'order_temporary_folder', str(Path(tempfile.gettempdir()) / 'MV Image')))
-        ttk.Label(parent, text='Pasta temporária local para extração dos PDFs').pack(anchor='w')
+        ttk.Label(parent, text='Pasta temporária local para extração dos documentos').pack(anchor='w')
         temporary_row = ttk.Frame(parent)
         temporary_row.pack(fill='x', pady=8)
         self.temporary_entry = ttk.Entry(temporary_row, textvariable=self.temporary_folder)
@@ -48,7 +48,7 @@ class OrderBatchTab:
         ttk.Button(row, text='Abrir pasta', command=lambda: self.open_path(self.project)).pack(side='left', padx=8)
         ttk.Button(temporary_row, text='Abrir pasta', command=lambda: self.open_path(self.temporary_folder)).pack(side='left', padx=8)
         self.output_folder = tk.StringVar(master=parent, value=load_config().get('batch_output_dir', ''))
-        ttk.Label(parent, text='Pasta de saída dos pedidos PDF').pack(anchor='w')
+        ttk.Label(parent, text='Pasta de saída dos pedidos').pack(anchor='w')
         output_row = ttk.Frame(parent)
         output_row.pack(fill='x', pady=8)
         self.output_entry = ttk.Entry(output_row, textvariable=self.output_folder)
@@ -60,9 +60,10 @@ class OrderBatchTab:
         self.set_path_states()
         actions = ttk.Frame(parent)
         actions.pack(fill='x', pady=8)
-        ttk.Button(actions, text='Abrir entrada de PDFs', command=lambda: self.open_folder('entrada')).pack(side='left')
+        ttk.Button(actions, text='Abrir entrada de documentos', command=lambda: self.open_folder('entrada')).pack(side='left')
         ttk.Button(actions, text='Abrir relatórios', command=lambda: self.open_folder('relatorios')).pack(side='left', padx=8)
         ttk.Button(actions, text='Ler relatórios', command=self.read_reports).pack(side='left')
+        ttk.Label(parent, text='Imagens: pedido_1.jpg, pedido_2.png; página única: pedido.jpg.', wraplength=700).pack(anchor='w')
         self.pdf_panel = OrderPdfPanel(parent, app, self.project)
         self.path_entry.bind('<FocusOut>', lambda event: self.pdf_panel.refresh())
         self.start_button = ttk.Button(parent, text='Iniciar separação dos pedidos', command=self.start, style='Primary.TButton')
@@ -155,7 +156,7 @@ class OrderBatchTab:
     def choose_output(self):
         if not self.can_edit_paths:
             return
-        path = filedialog.askdirectory(parent=self.app.root, title='Saída dos pedidos PDF')
+        path = filedialog.askdirectory(parent=self.app.root, title='Saída dos pedidos')
         if path:
             self.output_folder.set(path)
             self.save_output()

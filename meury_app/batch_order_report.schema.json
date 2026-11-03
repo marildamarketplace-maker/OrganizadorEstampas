@@ -3,6 +3,7 @@
   "type": "object",
   "additionalProperties": false,
   "properties": {
+    "arquivosOrigem": { "type": "array", "items": { "type": "string" } },
     "pedido": { "type": "string" },
     "pastaCriada": { "type": "string" },
     "quantidadeCopiada": { "type": "integer", "minimum": 0 },

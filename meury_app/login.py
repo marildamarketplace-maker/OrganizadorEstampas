@@ -13,12 +13,20 @@ from .config import APP_NAME
 from .window_mode import configure_maximized
 
 
+def _readonly_database_uri(db_path: Path) -> str:
+    uri = db_path.resolve().as_uri()
+    # SQLite exige autoridade vazia; preserve o caminho UNC como //servidor/pasta.
+    if uri.startswith('file://') and not uri.startswith('file:///'):
+        uri = uri.replace('file://', 'file:////', 1)
+    return uri + '?mode=ro'
+
+
 def solicitar_login(db_path: Path, *, root=None) -> dict | None:
     # A newer schema must never be touched by an older binary, including login.
     if db_path.exists():
         from contextlib import closing
         from .operational_store import SCHEMA_VERSION
-        with closing(sqlite3.connect(db_path.resolve().as_uri() + '?mode=ro', uri=True)) as connection:
+        with closing(sqlite3.connect(_readonly_database_uri(db_path), uri=True)) as connection:
             if connection.execute('PRAGMA user_version').fetchone()[0] > SCHEMA_VERSION:
                 raise RuntimeError('Banco criado por uma versão mais recente.')
     owns_root = root is None

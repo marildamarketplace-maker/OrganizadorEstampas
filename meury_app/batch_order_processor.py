@@ -26,7 +26,7 @@ if __package__ in {None, ""}:  # Compatibilidade com execução direta deste arq
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from meury_app.order_documents import OrderDocument, discover_documents, prepare_document, move_document
-from meury_app.batch_output import print
+from meury_app.batch_output import print, output_sink
 from meury_app.config import load_config, configured_app_dir
 from meury_app.user_store import autenticar_usuario
 from meury_app import indexer
@@ -188,7 +188,7 @@ def configure_terminal_style() -> None:
 
 
 def terminal_text(text: str, *, color: str = "", bold: bool = False) -> str:
-    if not _TERMINAL_COLORS:
+    if not _TERMINAL_COLORS and output_sink.get() is None:
         return text
     colors = {
         "blue": "36",

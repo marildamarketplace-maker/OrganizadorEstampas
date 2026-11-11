@@ -9,6 +9,7 @@ import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+from .log_colors import LOG_COLORS, LogColorParser
 from .config import APP_DIR, OPERATIONAL_DB_FILE, load_config, save_config
 from .batch_reports_view import BatchReportsView
 from .order_pdf_panel import OrderPdfPanel
@@ -84,6 +85,10 @@ class OrderBatchTab:
                            font=('Courier New', 11), background='#18212f', foreground='#e5edf7',
                            selectbackground='#385a80', relief='flat', padx=12, pady=10,
                            spacing1=2, spacing3=2)
+        self.log_parser = LogColorParser()
+        for code, color in LOG_COLORS.items():
+            self.log.tag_configure(f'ansi_{code}', foreground=color)
+        self.log.tag_configure('bold', font=('Courier New', 11, 'bold'))
         self.log.tag_configure('error', foreground='#ff9999')
         scroll = ttk.Scrollbar(frame, command=self.log.yview)
         horizontal = ttk.Scrollbar(frame, orient='horizontal', command=self.log.xview)
@@ -101,7 +106,9 @@ class OrderBatchTab:
 
     def append_log(self, text, tag=()):
         self.log.configure(state='normal')
-        self.log.insert('end', text, tag)
+        extra_tags = (tag,) if isinstance(tag, str) else tuple(tag)
+        for content, tags in self.log_parser.feed(text):
+            self.log.insert('end', content, tags + extra_tags)
         if self.follow_logs.get():
             self.log.see('end')
         self.log.configure(state='disabled')
@@ -217,6 +224,7 @@ class OrderBatchTab:
                 codex = str(candidates[-1]) if candidates else ''
         self.log.configure(state='normal')
         self.log.delete('1.0', 'end')
+        self.log_parser = LogColorParser()
         self.log.configure(state='disabled')
         self.app._set_busy(True)
         self.path_entry.configure(state='disabled')

@@ -1,5 +1,10 @@
 # MV Image
 
+Para executar diretamente, sem gerar executável ou pacote de aplicativo, rode
+`python run_app.py` na raiz do projeto (Windows ou macOS). O script cria ou
+reutiliza a `.venv`, prepara as dependências e abre o programa. No Windows,
+também é possível usar `.venv\Scripts\python.exe run_app.py` se o ambiente já existir.
+
 ## Fluxo atual do indexador e sincronizador
 
 O fluxo operacional principal termina ao publicar a estampa com

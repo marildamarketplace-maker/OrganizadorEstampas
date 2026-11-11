@@ -64,6 +64,7 @@ jobs:
           destination.mkdir()
           name = 'Install MV Image.exe'
           shutil.copy2(Path('dist') / name, destination / name)
+          shutil.copytree(Path('dist/MV Image'), destination / 'MV Image')
           PY
       - uses: actions/upload-artifact@v4
         with:

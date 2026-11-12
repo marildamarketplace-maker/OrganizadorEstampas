@@ -630,6 +630,28 @@ def run_codex(
     final_path: Path,
     log_path: Path,
 ) -> Dict[str, Any]:
+    # A CLI rejeita output em compartilhamentos UNC e reparse points no Windows.
+    # Somente o Python publica o artefato na pasta de relatórios do usuário.
+    final_path.unlink(missing_ok=True)
+    with tempfile.TemporaryDirectory(prefix="mv-image-codex-") as temporary:
+        local_final = Path(temporary) / "extracao.json"
+        try:
+            return _run_codex_local(
+                codex, project, pdf_path, schema_path, local_final, log_path,
+            )
+        finally:
+            if local_final.is_file():
+                shutil.copyfile(local_final, final_path)
+
+
+def _run_codex_local(
+    codex: Path | None,
+    project: Path,
+    pdf_path: Path,
+    schema_path: Path,
+    final_path: Path,
+    log_path: Path,
+) -> Dict[str, Any]:
     if codex is None or not codex.is_file():
         raise RuntimeError("Codex CLI não está disponível.")
     try:

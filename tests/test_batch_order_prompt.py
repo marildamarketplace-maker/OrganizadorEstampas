@@ -207,6 +207,44 @@ class BatchOrderPromptTest(unittest.TestCase):
             self.assertNotIn(str(root), request["input"][0]["content"][1]["text"])
             self.assertNotIn("OPENAI_API_KEY", log.read_text(encoding="utf-8"))
 
+    def test_codex_stages_output_locally_and_preserves_failure_diagnostics(self):
+        for success in (True, False):
+            with self.subTest(success=success), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                reports = root / "network-reports"
+                reports.mkdir()
+                final = reports / "final.json"
+                final.write_text("stale output", encoding="utf-8")
+                codex = root / "codex"
+                codex.touch()
+                payload = json.dumps(self.valid_order()) if success else "invalid JSON"
+                staged_paths = []
+
+                def complete(command, **_kwargs):
+                    staged = Path(command[command.index("--output-last-message") + 1])
+                    staged_paths.append(staged)
+                    self.assertNotEqual(staged.parent, reports)
+                    self.assertFalse(final.exists())
+                    staged.write_text(payload, encoding="utf-8")
+                    return SimpleNamespace(returncode=0 if success else 1, stdout="details")
+
+                with (
+                    patch("meury_app.batch_order_processor.discover_codex_models",
+                          return_value=("test-model",)),
+                    patch("meury_app.batch_order_processor.subprocess.run", side_effect=complete),
+                ):
+                    if success:
+                        result = run_codex(codex, root, root / "order.pdf",
+                                           root / "schema.json", final, reports / "codex.log")
+                        self.assertEqual(result, self.valid_order())
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, "Todos os modelos"):
+                            run_codex(codex, root, root / "order.pdf",
+                                      root / "schema.json", final, reports / "codex.log")
+                self.assertEqual(final.read_text(encoding="utf-8"), payload)
+                self.assertFalse(staged_paths[0].parent.exists())
+                self.assertIn("details", (reports / "codex.log").read_text(encoding="utf-8"))
+
     def test_codex_uses_requested_model_chain_with_high_reasoning(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -217,12 +255,12 @@ class BatchOrderPromptTest(unittest.TestCase):
             def complete(command, **_kwargs):
                 model = command[command.index("--model") + 1]
                 if model == "gpt-6-astra":
-                    final_path.write_text(
+                    Path(command[command.index("--output-last-message") + 1]).write_text(
                         json.dumps({"pedido": "incompleto"}), encoding="utf-8"
                     )
                     return SimpleNamespace(returncode=0, stdout="ok")
                 if model == "gpt-5.5":
-                    final_path.write_text(
+                    Path(command[command.index("--output-last-message") + 1]).write_text(
                         json.dumps(self.valid_order()), encoding="utf-8"
                     )
                     return SimpleNamespace(returncode=0, stdout="ok")
@@ -283,7 +321,7 @@ class BatchOrderPromptTest(unittest.TestCase):
                 calls += 1
                 if calls == 1:
                     raise subprocess.TimeoutExpired(command, 1, output="parcial")
-                final_path.write_text(
+                Path(command[command.index("--output-last-message") + 1]).write_text(
                     json.dumps(self.valid_order()), encoding="utf-8"
                 )
                 return SimpleNamespace(returncode=0, stdout="ok")
@@ -352,7 +390,7 @@ class BatchOrderPromptTest(unittest.TestCase):
             log_path = root / "codex.log"
 
             def complete(command, **_kwargs):
-                final_path.write_text(
+                Path(command[command.index("--output-last-message") + 1]).write_text(
                     json.dumps(self.valid_order()), encoding="utf-8"
                 )
                 return SimpleNamespace(returncode=0, stdout="ok")

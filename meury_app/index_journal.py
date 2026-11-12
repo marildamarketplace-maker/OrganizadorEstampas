@@ -20,30 +20,12 @@ def physical_signature(stat):
 
 @contextmanager
 def catalog_lock(path):
-    """Lock de processo liberado pelo SO inclusive após encerramento abrupto."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+b") as stream:
-        if stream.tell() == 0:
-            stream.write(b"0")
-            stream.flush()
-        stream.seek(0)
-        try:
-            if os.name == "nt":
-                import msvcrt
-                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as exc:
-            raise RuntimeError("Outra atualização deste catálogo está em andamento.") from exc
-        try:
+    from .shared_files import file_lock, ResourceBusy
+    try:
+        with file_lock(path, owner=True):
             yield
-        finally:
-            stream.seek(0)
-            if os.name == "nt":
-                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+    except ResourceBusy as exc:
+        raise ResourceBusy("Outra atualização deste catálogo está em andamento.") from exc
 
 
 class CandidateJournal:

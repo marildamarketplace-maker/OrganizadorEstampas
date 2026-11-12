@@ -43,8 +43,9 @@ class OrderBatchTests(unittest.TestCase):
     def test_existing_lock_preserved_and_errors_release_own_lock(self):
         lock = self.project / 'pedidos_pdf/.controle/em_execucao'
         lock.mkdir(parents=True)
-        with self.assertRaisesRegex(RuntimeError, 'andamento'):
+        with patch('meury_app.order_batch.run_batch', return_value=0) as core:
             executar_lote(self.project, self.db, self.admin, update_index=False, log=lambda text: None)
+            core.assert_called_once()
         self.assertTrue(lock.is_dir())
         lock.rmdir()
         with patch('meury_app.order_batch.run_batch', side_effect=RuntimeError('falha')):

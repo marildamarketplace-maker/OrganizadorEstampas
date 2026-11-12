@@ -8,6 +8,8 @@ import os
 import shutil
 import sqlite3
 
+from .shared_files import atomic_write, file_lock
+
 APP_NAME = "MV Image"
 DEFAULT_APP_DIR = Path.home() / ".meury_organizador_estampas"
 APP_DIR_LOCATION_FILE = DEFAULT_APP_DIR / "data_location.json"
@@ -276,7 +278,5 @@ def load_config():
 
 def save_config(data):
     ensure_app_dir()
-    CONFIG_FILE.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
-        encoding="utf-8"
-    )
+    with file_lock(CONFIG_FILE.with_suffix('.lock'), timeout=10):
+        atomic_write(CONFIG_FILE, json.dumps(data, ensure_ascii=False, indent=2))

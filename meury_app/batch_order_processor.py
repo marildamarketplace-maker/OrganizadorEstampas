@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from contextlib import ExitStack
+import uuid
+
 import argparse
 import base64
 import csv
@@ -25,13 +28,18 @@ from typing import Any, Callable, Dict, Iterable, List, Sequence
 if __package__ in {None, ""}:  # Compatibilidade com execução direta deste arquivo.
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from meury_app.environment import load_local_environment
+
+if __name__ == "__main__":
+    load_local_environment()
+
+from meury_app.shared_files import atomic_write, file_lock, resource_path, ResourceBusy
 from meury_app.order_documents import OrderDocument, discover_documents, prepare_document, move_document
 from meury_app.batch_output import print, output_sink
 from meury_app.config import load_config, configured_app_dir
 from meury_app.user_store import autenticar_usuario
 from meury_app import indexer
 from meury_app.daily_index import ensure_daily_index, prepare_daily_index
-from meury_app.environment import load_local_environment
 from meury_app.processor import create_order_response
 
 
@@ -286,7 +294,7 @@ def solicitar_login_lote() -> dict | None:
         except getpass.GetPassWarning:
             print('Não foi possível ocultar a senha. Abra o lote em um terminal interativo.', flush=True)
             return None
-        except (sqlite3.Error, OSError, ValueError):
+        except (sqlite3.Error, OSError, ValueError, RuntimeError):
             print('Não foi possível acessar o banco de usuários. Lote encerrado.', flush=True)
             return None
         if identity is not None:
@@ -359,32 +367,53 @@ def safe_report_name(path: Path) -> str:
 def move_to_completed(pdf_path: Path, completed_dir: Path) -> Path:
     """Move um PDF concluído sem sobrescrever outro arquivo de mesmo nome."""
     completed_dir.mkdir(parents=True, exist_ok=True)
-    destination = completed_dir / pdf_path.name
-    counter = 2
-    while destination.exists():
-        destination = completed_dir / f"{pdf_path.stem}_{counter}{pdf_path.suffix}"
-        counter += 1
-    return Path(shutil.move(str(pdf_path), str(destination)))
+    with file_lock(completed_dir / '.move.lock', timeout=10):
+        counter = 1
+        while True:
+            destination = completed_dir / (pdf_path.name if counter == 1 else
+                                           f"{pdf_path.stem}_{counter}{pdf_path.suffix}")
+            try:
+                with destination.open('xb'):
+                    pass
+                break
+            except FileExistsError:
+                counter += 1
+        try:
+            return Path(shutil.move(str(pdf_path), str(destination)))
+        except OSError:
+            destination.unlink(missing_ok=True)
+            raise
 
 
 def load_successful_records(history_path: Path) -> Dict[str, Dict[str, Any]]:
     successful: Dict[str, Dict[str, Any]] = {}
     if not history_path.exists():
         return successful
-    with history_path.open(encoding="utf-8") as stream:
-        for line in stream:
-            try:
-                item = json.loads(line)
-            except (json.JSONDecodeError, TypeError):
-                continue
-            if item.get("resultadoFinal") in FINAL_SUCCESS and item.get("sha256"):
-                successful[str(item["sha256"])] = item
+    with file_lock(history_path.with_suffix('.lock'), timeout=10):
+        lines = history_path.read_text(encoding='utf-8').splitlines()
+    for line in lines:
+        try:
+            item = json.loads(line)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(item, dict) and item.get("resultadoFinal") in FINAL_SUCCESS and item.get("sha256"):
+            successful[str(item["sha256"])] = item
     return successful
 
 
 def append_history(history_path: Path, record: Dict[str, Any]) -> None:
-    with history_path.open("a", encoding="utf-8") as stream:
-        stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+    with file_lock(history_path.with_suffix('.lock'), timeout=10):
+        # A killed writer may leave a partial tail; isolate it from the next record.
+        if history_path.exists() and history_path.stat().st_size:
+            with history_path.open('rb+') as tail:
+                tail.seek(-1, os.SEEK_END)
+                if tail.read(1) != b'\n':
+                    tail.seek(0, os.SEEK_END)
+                    tail.write(b'\n')
+        with history_path.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
 
 
 def extract_json(text: str) -> Dict[str, Any]:
@@ -924,7 +953,7 @@ def extract_in_temporary_folder(*, temporary_folder: Path | None, document=None,
         return extract_with_fallback(**kwargs)
 
 
-def load_order_context(*, update_index: bool = True) -> tuple[Path, dict[str, list[str]]]:
+def load_order_context(*, update_index: bool = True, cancel_callback=None) -> tuple[Path, dict[str, list[str]]]:
     """Prepara e preserva uma única instância do índice para todo o lote."""
     config = load_config()
     output_value = config.get("batch_output_dir")
@@ -933,7 +962,7 @@ def load_order_context(*, update_index: bool = True) -> tuple[Path, dict[str, li
 
     started = time.monotonic()
     if update_index:
-        index, _sources, updated = prepare_daily_index()
+        index, _sources, updated = prepare_daily_index(**({'cancel_callback': cancel_callback} if cancel_callback else {}))
         action = "atualizado e reaproveitado" if updated else "carregado uma única vez"
     else:
         sources = [
@@ -1088,6 +1117,7 @@ def write_final_action_log(
     *,
     run_dir: Path,
     generated_at: str,
+    execution_notes: Sequence[str] = (),
 ) -> str:
     """Grava uma lista curta de tarefas; os detalhes permanecem nos logs individuais."""
     pending = [row for row in rows if row.get("validacoes") or row.get("resultado") == "FALHA"]
@@ -1128,8 +1158,10 @@ def write_final_action_log(
     ]
     if pending:
         lines.extend(["", "O QUE PRECISA SER FEITO"])
-    else:
+    elif not execution_notes:
         lines.extend(["", "Tudo certo. Nenhuma ação necessária."])
+    if execution_notes:
+        lines.extend(["", *execution_notes])
 
     for row in pending:
         filename = _human_value(row.get("arquivo") or "Documento não informado")
@@ -1230,15 +1262,30 @@ def print_result_details(result: Dict[str, Any]) -> None:
 
 
 def main() -> int:
-    started_at = time.monotonic()
     load_local_environment()
+    from meury_app.shared_sessions import session
+    try:
+        data = configured_app_dir()
+        with session(data):
+            return _main_in_session(session_data=data)
+    except (OSError, RuntimeError, sqlite3.Error) as exc:
+        print(f'Não foi possível iniciar o lote: {exc}', flush=True)
+        return 1
+
+
+def _main_in_session(*, session_data: Path | None = None) -> int:
+    started_at = time.monotonic()
     args = parse_args()
     project = Path(args.projeto).resolve()
     input_dir = project / "pedidos_pdf" / "entrada"
     configure_terminal_style()
     print_terminal_header(input_dir)
-    if solicitar_login_lote() is None:
+    identity = solicitar_login_lote()
+    if identity is None:
         return 1
+    if session_data is not None:
+        from meury_app.shared_sessions import set_session_user
+        set_session_user(session_data, identity)
     try:
         update_index = choose_index_update(args.atualizar_indice)
     except ValueError as exc:
@@ -1252,7 +1299,7 @@ def main() -> int:
 
 
 def run_batch(project: Path, *, codex_path: str = '', update_index: bool,
-              temporary_folder: Path | None = None) -> int:
+              temporary_folder: Path | None = None, cancel_callback=None) -> int:
     """Mesmo processamento para terminal e interface; autenticação é feita pelo chamador."""
     started_at = time.monotonic()
     project = Path(project).resolve()
@@ -1271,7 +1318,7 @@ def run_batch(project: Path, *, codex_path: str = '', update_index: bool,
     control_dir.mkdir(parents=True, exist_ok=True)
     extractions_dir.mkdir(parents=True, exist_ok=True)
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex
     run_dir = reports_dir / timestamp
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1279,30 +1326,23 @@ def run_batch(project: Path, *, codex_path: str = '', update_index: bool,
     documents = discover_documents(input_dir)
     document_by_path = {document.pages[0]: document for document in documents}
     pdfs = list(document_by_path)
-    pdf_digests = {}
-    for path, document in list(document_by_path.items()):
-        try:
-            pdf_digests[path] = file_hash(path) if document.is_pdf else document.digest()
-        except OSError as exc:
-            document_by_path[path] = OrderDocument(document.identifier, document.pages,
-                                                   f'Não foi possível ler o documento: {exc}')
-            pdf_digests[path] = hashlib.sha256(str(path).encode()).hexdigest()
     success_rows: List[Dict[str, Any]] = []
     failure_rows: List[Dict[str, Any]] = []
     skipped_rows: List[Dict[str, Any]] = []
     processed_rows: List[Dict[str, Any]] = []
+    execution_notes: list[str] = []
     order_context: tuple[Path, dict[str, list[str]]] | None = None
 
     try:
         if not pdfs:
             if update_index:
-                ensure_daily_index()
+                ensure_daily_index(**({'cancel_callback': cancel_callback} if cancel_callback else {}))
             print(f"Nenhum documento encontrado em: {input_dir}")
         else:
             # Mesmo PDFs concluídos precisam passar novamente pela criação do pedido.
             # A extração salva continua sendo reutilizada, mas a pasta de saída pode
             # ter sido removida e deve ser recomposta ao executar um novo lote.
-            order_context = load_order_context(update_index=update_index)
+            order_context = load_order_context(update_index=update_index, **({'cancel_callback': cancel_callback} if cancel_callback else {}))
     except (OSError, RuntimeError, ValueError) as exc:
         print(
             f"[indice] ERRO: não foi possível preparar o índice; "
@@ -1312,180 +1352,205 @@ def run_batch(project: Path, *, codex_path: str = '', update_index: bool,
         return 1
 
     for position, pdf_path in enumerate(pdfs, start=1):
-        document = document_by_path[pdf_path]
-        digest = pdf_digests[pdf_path]
-        print("")
-        print(terminal_text("-" * TERMINAL_WIDTH, color="blue"))
-        print(terminal_text(
-            f"PEDIDO {position} DE {len(pdfs)}", color="blue", bold=True,
-        ))
-        print(f"  Arquivo: {pdf_path.name}", flush=True)
-        if digest in successful_records:
-            print(
-                "  Pedido concluído anteriormente; recriando a pasta com a "
-                "extração salva.",
-                flush=True,
-            )
-
-        report_base = f"{position:03d}_{safe_report_name(pdf_path)}"
-        final_path = run_dir / f"{report_base}.json"
-        codex_final_path = run_dir / f"{report_base}.extracao.json"
-        log_path = run_dir / f"{report_base}.log"
-        extraction_path = extractions_dir / f"v{EXTRACTION_VERSION}_{digest}.json"
-        try:
-            extraction: Dict[str, Any] = {}
-            extraction_provider = ""
-            extraction_model = ""
-            if document.error:
-                raise ValueError(document.error)
-            if extraction_path.exists():
-                try:
-                    cached = json.loads(extraction_path.read_text(encoding="utf-8"))
-                    if valid_extraction(cached):
-                        extraction = cached
-                        extraction_provider = "cache"
-                except (json.JSONDecodeError, OSError, TypeError):
-                    extraction = {}
-
-            legacy_extraction_path = (
-                project / "tmp" / "pdfs" / pdf_path.stem / "pedido.json"
-            )
-            if document.is_pdf and not extraction and legacy_extraction_path.exists():
-                try:
-                    legacy = json.loads(
-                        legacy_extraction_path.read_text(encoding="utf-8")
-                    )
-                    if valid_extraction(legacy):
-                        extraction = legacy
-                        extraction_provider = "cache_legado"
-                        extraction_path.write_text(
-                            json.dumps(extraction, ensure_ascii=False, indent=2),
-                            encoding="utf-8",
-                        )
-                        print(
-                            "  Extração anterior encontrada e adicionada ao cache.",
-                            flush=True,
-                        )
-                except (json.JSONDecodeError, OSError, TypeError):
-                    extraction = {}
-
-            if extraction:
+        if cancel_callback and cancel_callback():
+            execution_notes.append('Lote cancelado. Pedidos ainda não iniciados foram preservados.')
+            print(execution_notes[-1], flush=True)
+            break
+        with ExitStack() as reservations:
+            identifier = document_by_path[pdf_path].identifier
+            try:
+                reservations.enter_context(file_lock(
+                    resource_path(control_dir / 'reservas', identifier), owner=True,
+                ))
+            except ResourceBusy:
+                execution_notes.append(f'Pedido {identifier}: reservado por outro PC; não processado nesta execução.')
+                skipped_rows.append({'arquivo': pdf_path.name, 'pedido': identifier, 'resultado': 'EM_OUTRO_PC'})
+                print(execution_notes[-1], flush=True)
+                continue
+            documents_now = {doc.identifier.casefold(): doc for doc in discover_documents(input_dir)}
+            if identifier.casefold() not in documents_now:
+                continue
+            document = documents_now[identifier.casefold()]
+            pdf_path = document.pages[0]
+            try:
+                digest = file_hash(pdf_path) if document.is_pdf else document.digest()
+            except OSError as exc:
+                document = OrderDocument(document.identifier, document.pages, f'Não foi possível ler o documento: {exc}')
+                document_by_path[pdf_path] = document
+                digest = hashlib.sha256(str(pdf_path).encode()).hexdigest()
+            print("")
+            print(terminal_text("-" * TERMINAL_WIDTH, color="blue"))
+            print(terminal_text(
+                f"PEDIDO {position} DE {len(pdfs)}", color="blue", bold=True,
+            ))
+            print(f"  Arquivo: {pdf_path.name}", flush=True)
+            if digest in successful_records:
                 print(
-                    "  Extração salva encontrada; provedores não serão executados.",
+                    "  Pedido concluído anteriormente; recriando a pasta com a "
+                    "extração salva.",
                     flush=True,
                 )
-                log_path.write_text(
-                    f"Extração reutilizada: {extraction_path}\n", encoding="utf-8"
-                )
-            else:
-                print("  Aguardando extração do Codex...", flush=True)
-                extraction, extraction_provider, extraction_model = extract_in_temporary_folder(
-                    temporary_folder=temporary_folder,
-                    document=None if document.is_pdf else document,
-                    codex=codex,
-                    project=project,
-                    pdf_path=pdf_path,
-                    schema_path=schema_path,
-                    codex_final_path=codex_final_path,
-                    log_path=log_path,
-                )
-                extraction_path.write_text(
-                    json.dumps(extraction, ensure_ascii=False, indent=2), encoding="utf-8"
-                )
-                provider_label = (
-                    "Codex" if extraction_provider == "codex" else "API OpenAI"
-                )
-                print(f"  Extração concluída por: {provider_label}", flush=True)
-                print(f"  Extração salva: {extraction_path}", flush=True)
 
-            print("  Criando pedido e copiando estampas...", flush=True)
-            if order_context is None:
-                order_context = load_order_context(update_index=update_index)
-            output_dir, order_index = order_context
-            result = run_creator(
-                extraction_path,
-                log_path,
-                output_dir,
-                order_index,
-            )
-        except (OSError, RuntimeError, ValueError) as exc:
-            result = {
-                "pedido": extraction.get("pedido", "") if "extraction" in locals() else "",
-                "pastaCriada": "",
-                "quantidadeCopiada": 0,
-                "copiadas": [],
-                "naoEncontradas": [],
-                "duplicadas": [],
-                "jaExistentes": [],
-                "erros": [str(exc)],
-                "resultadoFinal": "FALHA",
-            }
-            with log_path.open("a", encoding="utf-8") as stream:
-                stream.write(f"\nERRO: {exc}\n")
-        reported_outcome = str(result.get("resultadoFinal", "FALHA")).upper()
-        outcome = "SUCESSO" if reported_outcome == "SUCESSO" else "FALHA"
-        result["resultadoFinal"] = outcome
-        result["arquivosOrigem"] = [path.name for path in document.pages]
-        final_path.write_text(
-            json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-
-        validations, actions = validation_requirements(result)
-        row = {
-            "arquivo": " | ".join(path.name for path in document.pages),
-            "arquivosOrigem": [path.name for path in document.pages],
-            "pedido": result.get("pedido", ""),
-            "resultado": outcome,
-            "dataProcessamento": now_iso(),
-            "sha256": digest,
-            "detalhes": " | ".join(validations),
-            "validacoes": validations,
-            "acoes": actions,
-            "relatorioJson": str(final_path),
-            "logIndividual": str(log_path),
-        }
-        history_record = dict(row)
-        history_record.update(
-            {
-                "resultadoFinal": outcome,
-                "relatorioJson": str(final_path),
-                "logCodex": str(log_path),
-                "logExtracao": str(log_path),
-                "provedorExtracao": extraction_provider,
-                "modeloExtracao": extraction_model,
-            }
-        )
-        print_result_details(result)
-
-        if outcome in FINAL_SUCCESS:
+            report_base = f"{position:03d}_{safe_report_name(pdf_path)}"
+            final_path = run_dir / f"{report_base}.json"
+            codex_final_path = run_dir / f"{report_base}.extracao.json"
+            log_path = run_dir / f"{report_base}.log"
+            extraction_path = extractions_dir / f"v{EXTRACTION_VERSION}_{digest}.json"
             try:
-                completed_paths = ([move_to_completed(pdf_path, completed_dir)] if document.is_pdf
-                                   else move_document(document, completed_dir))
-                completed_path = completed_paths[0]
-                history_record["arquivosConcluidos"] = [str(path) for path in completed_paths]
-                if document.is_pdf:
-                    history_record["pdfConcluido"] = str(completed_path)
-                print(f"  Documento movido para: {completed_path}")
-            except OSError as exc:
-                print(f"  AVISO: não foi possível mover o PDF concluído: {exc}")
-                row["validacoes"].append(f"Documento não foi movido para concluído: {exc}")
-                row["acoes"].append(
-                    "Mover manualmente o documento para a pasta 'concluido' e verificar "
-                    "permissões ou bloqueios no arquivo."
+                extraction: Dict[str, Any] = {}
+                extraction_provider = ""
+                extraction_model = ""
+                if document.error:
+                    raise ValueError(document.error)
+                if extraction_path.exists():
+                    try:
+                        cached = json.loads(extraction_path.read_text(encoding="utf-8"))
+                        if valid_extraction(cached):
+                            extraction = cached
+                            extraction_provider = "cache"
+                    except (json.JSONDecodeError, OSError, TypeError):
+                        extraction = {}
+
+                legacy_extraction_path = (
+                    project / "tmp" / "pdfs" / pdf_path.stem / "pedido.json"
                 )
-                row["detalhes"] = " | ".join(row["validacoes"])
-                history_record["detalhes"] = row["detalhes"]
-            success_rows.append(row)
-            successful_records[digest] = history_record
-        else:
-            failure_rows.append(row)
-            print("  Este documento será tentado novamente no próximo lote.")
-        processed_rows.append(row)
-        append_history(history_path, history_record)
+                if document.is_pdf and not extraction and legacy_extraction_path.exists():
+                    try:
+                        legacy = json.loads(
+                            legacy_extraction_path.read_text(encoding="utf-8")
+                        )
+                        if valid_extraction(legacy):
+                            extraction = legacy
+                            extraction_provider = "cache_legado"
+                            atomic_write(extraction_path, json.dumps(extraction, ensure_ascii=False, indent=2))
+                            print(
+                                "  Extração anterior encontrada e adicionada ao cache.",
+                                flush=True,
+                            )
+                    except (json.JSONDecodeError, OSError, TypeError):
+                        extraction = {}
+
+                if extraction:
+                    print(
+                        "  Extração salva encontrada; provedores não serão executados.",
+                        flush=True,
+                    )
+                    log_path.write_text(
+                        f"Extração reutilizada: {extraction_path}\n", encoding="utf-8"
+                    )
+                else:
+                    print("  Aguardando extração do Codex...", flush=True)
+                    extraction, extraction_provider, extraction_model = extract_in_temporary_folder(
+                        temporary_folder=temporary_folder,
+                        document=None if document.is_pdf else document,
+                        codex=codex,
+                        project=project,
+                        pdf_path=pdf_path,
+                        schema_path=schema_path,
+                        codex_final_path=codex_final_path,
+                        log_path=log_path,
+                    )
+                    atomic_write(extraction_path, json.dumps(extraction, ensure_ascii=False, indent=2))
+                    provider_label = (
+                        "Codex" if extraction_provider == "codex" else "API OpenAI"
+                    )
+                    print(f"  Extração concluída por: {provider_label}", flush=True)
+                    print(f"  Extração salva: {extraction_path}", flush=True)
+
+                print("  Criando pedido e copiando estampas...", flush=True)
+                if order_context is None:
+                    order_context = load_order_context(update_index=update_index, **({'cancel_callback': cancel_callback} if cancel_callback else {}))
+                output_dir, order_index = order_context
+                reservations.enter_context(file_lock(
+                    resource_path(output_dir / '.order-locks', str(extraction['pedido'])),
+                    timeout=30, cancel=cancel_callback, owner=True,
+                ))
+                result = run_creator(
+                    extraction_path,
+                    log_path,
+                    output_dir,
+                    order_index,
+                )
+            except (OSError, RuntimeError, ValueError) as exc:
+                result = {
+                    "pedido": extraction.get("pedido", "") if "extraction" in locals() else "",
+                    "pastaCriada": "",
+                    "quantidadeCopiada": 0,
+                    "copiadas": [],
+                    "naoEncontradas": [],
+                    "duplicadas": [],
+                    "jaExistentes": [],
+                    "erros": [str(exc)],
+                    "resultadoFinal": "FALHA",
+                }
+                with log_path.open("a", encoding="utf-8") as stream:
+                    stream.write(f"\nERRO: {exc}\n")
+            reported_outcome = str(result.get("resultadoFinal", "FALHA")).upper()
+            outcome = "SUCESSO" if reported_outcome == "SUCESSO" else "FALHA"
+            result["resultadoFinal"] = outcome
+            result["arquivosOrigem"] = [path.name for path in document.pages]
+            atomic_write(final_path, json.dumps(result, ensure_ascii=False, indent=2))
+
+            validations, actions = validation_requirements(result)
+            row = {
+                "arquivo": " | ".join(path.name for path in document.pages),
+                "arquivosOrigem": [path.name for path in document.pages],
+                "pedido": result.get("pedido", ""),
+                "resultado": outcome,
+                "dataProcessamento": now_iso(),
+                "sha256": digest,
+                "detalhes": " | ".join(validations),
+                "validacoes": validations,
+                "acoes": actions,
+                "relatorioJson": str(final_path),
+                "logIndividual": str(log_path),
+            }
+            history_record = dict(row)
+            history_record.update(
+                {
+                    "resultadoFinal": outcome,
+                    "relatorioJson": str(final_path),
+                    "logCodex": str(log_path),
+                    "logExtracao": str(log_path),
+                    "provedorExtracao": extraction_provider,
+                    "modeloExtracao": extraction_model,
+                }
+            )
+            print_result_details(result)
+
+            if outcome in FINAL_SUCCESS:
+                try:
+                    current_digest = file_hash(pdf_path) if document.is_pdf else document.digest()
+                    if current_digest != digest:
+                        raise OSError('Documento alterado durante o processamento; origem preservada para revisão.')
+                    completed_paths = ([move_to_completed(pdf_path, completed_dir)] if document.is_pdf
+                                       else move_document(document, completed_dir))
+                    completed_path = completed_paths[0]
+                    history_record["arquivosConcluidos"] = [str(path) for path in completed_paths]
+                    if document.is_pdf:
+                        history_record["pdfConcluido"] = str(completed_path)
+                    print(f"  Documento movido para: {completed_path}")
+                except OSError as exc:
+                    print(f"  AVISO: não foi possível mover o PDF concluído: {exc}")
+                    row["validacoes"].append(f"Documento não foi movido para concluído: {exc}")
+                    row["acoes"].append(
+                        "Mover manualmente o documento para a pasta 'concluido' e verificar "
+                        "permissões ou bloqueios no arquivo."
+                    )
+                    row["detalhes"] = " | ".join(row["validacoes"])
+                    history_record["detalhes"] = row["detalhes"]
+                success_rows.append(row)
+                successful_records[digest] = history_record
+            else:
+                failure_rows.append(row)
+                print("  Este documento será tentado novamente no próximo lote.")
+            processed_rows.append(row)
+            append_history(history_path, history_record)
 
     write_csv(run_dir / "sucessos.csv", success_rows)
     write_csv(run_dir / "falhas.csv", failure_rows)
-    write_csv(run_dir / "ja_processados.csv", skipped_rows)
+    write_csv(run_dir / "ja_processados.csv", [])
+    write_csv(run_dir / "em_outro_pc.csv", skipped_rows)
     write_csv(
         run_dir / "historico_processados.csv",
         sorted(
@@ -1503,6 +1568,7 @@ def run_batch(project: Path, *, codex_path: str = '', update_index: bool,
         processed_rows,
         run_dir=run_dir,
         generated_at=now_iso(),
+        execution_notes=execution_notes,
     )
     print_terminal_final_log(final_log)
     print(terminal_text(
@@ -1510,7 +1576,7 @@ def run_batch(project: Path, *, codex_path: str = '', update_index: bool,
     ))
     print(terminal_text("Relatório completo:", color="muted"))
     print(f"  {final_log_path}")
-    return 1 if any(row.get("validacoes") for row in processed_rows) else 0
+    return 1 if (cancel_callback and cancel_callback()) or any(row.get("validacoes") for row in processed_rows) else 0
 
 
 if __name__ == "__main__":

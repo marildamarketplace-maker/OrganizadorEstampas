@@ -105,7 +105,7 @@ class BatchIndexOptionTest(unittest.TestCase):
                 patch.object(batch, "run_creator", wraps=batch.run_creator) as creator,
                 redirect_stdout(io.StringIO()),
             ):
-                exit_code = batch.main()
+                exit_code = batch._main_in_session()
 
             self.assertEqual(exit_code, 0)
             prompt.assert_called_once()
@@ -148,7 +148,7 @@ class BatchIndexOptionTest(unittest.TestCase):
                 patch.object(batch, "prepare_daily_index") as prepare,
                 redirect_stdout(io.StringIO()),
             ):
-                exit_code = batch.main()
+                exit_code = batch._main_in_session()
         self.assertEqual(exit_code, 0)
         load_context.assert_not_called()
         ensure.assert_not_called()
@@ -167,7 +167,7 @@ class BatchIndexOptionTest(unittest.TestCase):
                 patch.object(batch, "ensure_daily_index") as ensure,
                 redirect_stdout(io.StringIO()),
             ):
-                exit_code = batch.main()
+                exit_code = batch._main_in_session()
         self.assertEqual(exit_code, 0)
         ensure.assert_called_once_with()
         load_context.assert_not_called()

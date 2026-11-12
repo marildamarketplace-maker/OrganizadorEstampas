@@ -13,12 +13,7 @@ from .config import APP_NAME
 from .window_mode import configure_maximized
 
 
-def _readonly_database_uri(db_path: Path) -> str:
-    uri = db_path.resolve().as_uri()
-    # SQLite exige autoridade vazia; preserve o caminho UNC como //servidor/pasta.
-    if uri.startswith('file://') and not uri.startswith('file:///'):
-        uri = uri.replace('file://', 'file:////', 1)
-    return uri + '?mode=ro'
+from .shared_database import readonly_uri as _readonly_database_uri
 
 
 def solicitar_login(db_path: Path, *, root=None) -> dict | None:
@@ -77,11 +72,12 @@ def solicitar_login(db_path: Path, *, root=None) -> dict | None:
             identity = result
             root.quit()
             return
-        failures += 1
-        status.set('Não foi possível acessar o banco de usuários.' if unavailable
+        if not unavailable:
+            failures += 1
+        status.set('Banco temporariamente indisponível. Tente novamente.' if unavailable
                    else 'Usuário ou senha inválidos.')
         # Retentativas limitadas na janela, sem bloquear a interface.
-        schedule(min(30, failures) * 1000, unlock)
+        schedule(1000 if unavailable else min(30, failures) * 1000, unlock)
 
     def submit(event=None):
         nonlocal busy
@@ -99,7 +95,7 @@ def solicitar_login(db_path: Path, *, root=None) -> dict | None:
         def worker():
             try:
                 results.put((autenticar_usuario(db_path, username, password), False))
-            except (sqlite3.Error, OSError, ValueError):
+            except (sqlite3.Error, OSError, ValueError, RuntimeError):
                 results.put((None, True))
 
         threading.Thread(target=worker, daemon=True).start()
@@ -116,13 +112,10 @@ def solicitar_login(db_path: Path, *, root=None) -> dict | None:
     import os
     if os.environ.get('MV_IMAGE_UPDATE_HEALTH'):
         from contextlib import closing
-        from .operational_store import ensure_schema, SCHEMA_VERSION
+        # The manual installer holds the exclusive global data gate here.
+        from .shared_database import prepare_database
         from .update_install import mark_healthy
-        with closing(sqlite3.connect(db_path)) as connection:
-            if connection.execute('PRAGMA user_version').fetchone()[0] > SCHEMA_VERSION:
-                raise RuntimeError('Banco criado por uma versão mais recente.')
-            ensure_schema(connection)
-            connection.commit()
+        prepare_database(db_path)
         root.update_idletasks()
         mark_healthy()
     root.mainloop()

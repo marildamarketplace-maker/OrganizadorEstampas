@@ -102,7 +102,7 @@ function Remove-OwnMarker([string]$Marker, [string]$Token, [string]$LockDirector
     if ($owner.token -eq $Token) {
         Remove-Item -LiteralPath $Marker
         # No recursive deletion: unknown files in the control directory survive.
-        if ((Test-Path -LiteralPath $LockDirectory) -and
+        if ($LockDirectory -and (Test-Path -LiteralPath $LockDirectory) -and
             @(Get-ChildItem -LiteralPath $LockDirectory -Force).Count -eq 0) {
             [IO.Directory]::Delete($LockDirectory)
         }
@@ -112,11 +112,10 @@ function Remove-OwnMarker([string]$Marker, [string]$Token, [string]$LockDirector
 function Invoke-OrderBatch {
     $project = [IO.Path]::GetFullPath($ProjectRoot).TrimEnd('\')
     $processor = [IO.Path]::GetFullPath($ProcessorPath)
-    $lockDirectory = Join-Path $project 'pedidos_pdf\.controle\em_execucao'
-    # Outside the legacy directory: an older BAT may still remove that directory
-    # after its worker is stopped, while the replacement is already starting.
-    $marker = Join-Path (Split-Path $lockDirectory) 'windows_execution.json'
     $token = [Guid]::NewGuid().ToString('N')
+    $control = Join-Path $project 'pedidos_pdf\.controle'
+    [IO.Directory]::CreateDirectory($control) | Out-Null
+    $marker = Join-Path $control "windows_execution_$token.json"
     $hash = [Security.Cryptography.SHA256]::Create()
     try {
         $digest = [BitConverter]::ToString($hash.ComputeHash(
@@ -131,20 +130,11 @@ function Invoke-OrderBatch {
         Enter-LaunchGate $gate
         $gateHeld = $true
         $active = @(Get-BatchProcesses $project $processor)
-        if ($active.Count -gt 0) {
-            Write-Host "Ja existe um processamento em lote em andamento. PID(s): $($active.ProcessId -join ', ')"
-            if (-not $Reiniciar) {
-                Write-Host 'Deseja encerrar o lote anterior e reiniciar? [S/N]'
-                $answer = Read-Host
-                if ($answer -ine 'S') { return 2 }
-            }
+        if ($Reiniciar -and $active.Count -gt 0) {
             Write-Host 'Encerrando o lote anterior e seus processos filhos...'
             Stop-BatchProcesses $active $project $processor
-        } elseif (Test-Path -LiteralPath $lockDirectory) {
-            Write-Host 'Trava antiga sem lote ativo encontrada. Liberando e iniciando novamente...'
         }
-
-        [IO.Directory]::CreateDirectory($lockDirectory) | Out-Null
+        # Parallel batches are coordinated per order by Python, including other PCs.
         $start = New-Object Diagnostics.ProcessStartInfo
         $start.FileName = $PythonBin
         $start.Arguments = '"' + $processor + '" --projeto "' + $project + '" --codex "' + $CodexBin + '"'
@@ -169,7 +159,7 @@ function Invoke-OrderBatch {
                     Enter-LaunchGate $gate
                     $gateHeld = $true
                 }
-                Remove-OwnMarker $marker $token $lockDirectory
+                Remove-OwnMarker $marker $token
             } catch { Write-Host "AVISO ao liberar a trava: $($_.Exception.Message)" }
             if ($worker) { $worker.Dispose() }
         }

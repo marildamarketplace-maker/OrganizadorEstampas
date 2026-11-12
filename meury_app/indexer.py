@@ -29,6 +29,7 @@ from .asset_identity import relative_asset_identity
 from .index_progress import IndexProgress
 from .index_diagnostics import ACTIVE_METRICS, count, measured, new_metrics, stage
 from .index_journal import CandidateJournal, catalog_lock, physical_signature
+from .shared_files import file_lock
 from .index_run_state import record_index_update, state_file_for
 from .operational_store import (
     overlay_records, record_quarantine_issues, record_scan_summary, sync_records,
@@ -481,8 +482,13 @@ def _read_legacy_index() -> tuple[dict, list[dict]] | None:
         return None
 
 
+def _load_catalog(source_dirs=None, progress=None, *, for_scan=False):
+    with file_lock(INDEX_FILE.with_suffix('.publish.lock'), timeout=60):
+        return _load_catalog_unlocked(source_dirs, progress, for_scan=for_scan)
+
+
 @measured("load_total")
-def _load_catalog(source_dirs: list[Path] | None = None,
+def _load_catalog_unlocked(source_dirs: list[Path] | None = None,
                   progress: IndexProgress | None = None, *, for_scan=False) -> tuple[dict, list[dict]] | None:
     if progress:
         progress.report("Carregando catálogo")
@@ -549,8 +555,14 @@ def _index_from_records(
     return index
 
 
+def _write_catalog(records, sources, *, operational_records=None, progress=None):
+    with file_lock(INDEX_FILE.with_suffix('.publish.lock'), timeout=60):
+        return _write_catalog_unlocked(records, sources,
+                                       operational_records=operational_records, progress=progress)
+
+
 @measured("catalog_commit")
-def _write_catalog(
+def _write_catalog_unlocked(
     records: list[dict], sources: list[Path], *, operational_records: list[dict] | None = None,
     progress: IndexProgress | None = None,
 ) -> None:

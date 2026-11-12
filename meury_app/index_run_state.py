@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 import json
 import os
+import uuid
 from pathlib import Path
 from typing import Iterable
 
@@ -50,7 +51,7 @@ def record_index_update(
     """Grava atomicamente o momento do último scan concluído."""
     current = now or datetime.now().astimezone()
     state_file.parent.mkdir(parents=True, exist_ok=True)
-    temporary = state_file.with_name(f"{state_file.name}.tmp.{os.getpid()}")
+    temporary = state_file.with_name(f"{state_file.name}.tmp.{uuid.uuid4().hex}")
     try:
         temporary.write_text(
             json.dumps(

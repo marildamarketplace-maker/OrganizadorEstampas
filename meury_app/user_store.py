@@ -9,6 +9,8 @@ from pathlib import Path
 import secrets
 import sqlite3
 
+from .shared_database import connect
+
 _ITERATIONS = 600_000
 PERMISSOES_ABAS = (
     ('mapear_estampas', 'Mapear estampas'),
@@ -67,7 +69,7 @@ def criar_usuario(db_path: Path, usuario: str, senha: str,
     encoded = _hash_senha(senha)
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    with closing(sqlite3.connect(db_path, timeout=30)) as connection, connection:
+    with closing(connect(db_path)) as connection, connection:
         ensure_user_schema(connection)
         if administrador_id is not None:
             # Serializa a autorização e a inserção com outras escritas no banco.
@@ -111,8 +113,7 @@ def autenticar_usuario(db_path: Path, usuario: str, senha: str) -> dict | None:
     """Retorna apenas identidade e permissões; credenciais nunca saem do store."""
     if not isinstance(usuario, str) or not usuario.strip():
         return None
-    with closing(sqlite3.connect(db_path, timeout=30)) as connection, connection:
-        ensure_user_schema(connection)
+    with closing(connect(db_path, readonly=True)) as connection:
         row = connection.execute(
             'SELECT id, usuario, senha_hash, permissoes FROM usuarios WHERE usuario=?',
             (usuario.strip(),),
@@ -167,11 +168,11 @@ def _hash_senha(senha: str) -> str:
 
 
 @contextmanager
-def _admin_connection(db_path: Path, administrador_id: int):
+def _admin_connection(db_path: Path, administrador_id: int, *, readonly=False):
     if type(administrador_id) is not int:
         raise PermissionError('Sessão de administrador necessária')
-    with closing(sqlite3.connect(db_path, timeout=30)) as connection, connection:
-        connection.execute('BEGIN IMMEDIATE')
+    with closing(connect(db_path, readonly=readonly)) as connection, connection:
+        connection.execute('BEGIN' if readonly else 'BEGIN IMMEDIATE')
         row = connection.execute('SELECT permissoes FROM usuarios WHERE id=?',
                                  (administrador_id,)).fetchone()
         if row is None or 'admin' not in json.loads(row[0]):
@@ -180,7 +181,7 @@ def _admin_connection(db_path: Path, administrador_id: int):
 
 
 def listar_usuarios(db_path: Path, administrador_id: int) -> list[dict]:
-    with _admin_connection(db_path, administrador_id) as connection:
+    with _admin_connection(db_path, administrador_id, readonly=True) as connection:
         rows = connection.execute(
             'SELECT id, usuario, permissoes, criado_em FROM usuarios ORDER BY usuario COLLATE NOCASE'
         ).fetchall()
@@ -221,7 +222,7 @@ def excluir_usuario(db_path: Path, administrador_id: int, usuario_id: int) -> No
 def exigir_permissao(db_path: Path, usuario_id: int, permissao: str) -> None:
     if type(usuario_id) is not int:
         raise PermissionError('Sessão autenticada necessária')
-    with closing(sqlite3.connect(db_path, timeout=30)) as connection:
+    with closing(connect(db_path, readonly=True)) as connection:
         row = connection.execute('SELECT permissoes FROM usuarios WHERE id=?', (usuario_id,)).fetchone()
     if row is None or not pode_acessar_aba({'permissoes': json.loads(row[0])}, permissao):
         raise PermissionError('Seu usuário não possui permissão para separar pedidos')

@@ -52,7 +52,7 @@ class BatchLoginTests(unittest.TestCase):
                  patch.object(batch, 'choose_index_update') as choose, \
                  patch.object(batch, 'load_order_context') as context, \
                  patch.object(batch, 'ensure_daily_index') as sync:
-                self.assertEqual(batch.main(), 1)
+                self.assertEqual(batch._main_in_session(), 1)
                 choose.assert_not_called()
                 context.assert_not_called()
                 sync.assert_not_called()
@@ -66,5 +66,5 @@ class BatchLoginTests(unittest.TestCase):
              patch.object(batch, 'solicitar_login_lote', side_effect=lambda: calls.append('login') or {'id': 1}), \
              patch.object(batch, 'choose_index_update', side_effect=lambda value: calls.append('indice') or (_ for _ in ()).throw(ValueError('fim do teste'))), \
              redirect_stdout(io.StringIO()):
-            self.assertEqual(batch.main(), 1)
+            self.assertEqual(batch._main_in_session(), 1)
         self.assertEqual(calls, ['login', 'indice'])

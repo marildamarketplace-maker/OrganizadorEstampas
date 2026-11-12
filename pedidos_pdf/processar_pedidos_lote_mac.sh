@@ -8,15 +8,10 @@ cd "$RAIZ_PROJETO"
 CAIXA_ENTRADA="$RAIZ_PROJETO/pedidos_pdf/entrada"
 RELATORIOS="$RAIZ_PROJETO/pedidos_pdf/relatorios"
 CONTROLE="$RAIZ_PROJETO/pedidos_pdf/.controle"
-TRAVA="$CONTROLE/em_execucao"
 
 mkdir -p "$CAIXA_ENTRADA" "$RELATORIOS" "$CONTROLE"
 
-if ! mkdir "$TRAVA" 2>/dev/null; then
-  echo "Ja existe um processamento em lote em andamento."
-  exit 1
-fi
-trap 'rmdir "$TRAVA" 2>/dev/null || true' EXIT INT TERM
+# Reservas por pedido e sessao compartilhada sao controladas pelo Python.
 
 if command -v codex >/dev/null 2>&1; then
   CODEX_BIN="$(command -v codex)"

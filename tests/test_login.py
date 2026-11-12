@@ -29,10 +29,32 @@ class AuthenticationTests(unittest.TestCase):
 
 
 class StartupTests(unittest.TestCase):
+    def setUp(self):
+        identity_patch = patch('meury_app.shared_sessions.set_session_user')
+        identity_patch.start()
+        self.addCleanup(identity_patch.stop)
+        for name in ('hold_data_lock', 'release_data_lock'):
+            mocked = patch('meury_app.update_install.' + name)
+            mocked.start()
+            self.addCleanup(mocked.stop)
+
     def test_cancel_does_not_create_tabs(self):
         import app
         with patch.object(app, 'apply_app_icon'), patch.object(app.tk, 'Tk'), patch.object(app, 'solicitar_login', return_value=None), patch.object(app, 'App') as application:
             app.main()
+        application.assert_not_called()
+
+    def test_busy_startup_shows_username_without_opening_login_or_tabs(self):
+        import app
+        from meury_app.shared_files import ResourceBusy
+        with patch('meury_app.update_install.hold_data_lock',
+                   side_effect=ResourceBusy('Sistema em uso por Maria.')), \
+             patch('tkinter.messagebox.showerror') as notice, \
+             patch.object(app, 'solicitar_login') as login, \
+             patch.object(app, 'App') as application:
+            app.main()
+        self.assertIn('Maria', notice.call_args.args[1])
+        login.assert_not_called()
         application.assert_not_called()
 
     def test_authenticated_startup_passes_identity(self):

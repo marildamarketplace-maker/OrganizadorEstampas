@@ -7,6 +7,7 @@ from contextlib import closing
 import sqlite3
 import time
 
+from .shared_database import connect, ensure_current_schema, write_batches
 from .index_progress import IndexProgress
 from .user_store import ensure_user_schema
 
@@ -28,14 +29,8 @@ STATE_COLUMNS = (
 )
 
 
-def _connect(db_path: Path) -> sqlite3.Connection:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(db_path, timeout=30)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA journal_mode=WAL")
-    connection.execute("PRAGMA synchronous=NORMAL")
-    connection.execute("PRAGMA foreign_keys=ON")
-    return connection
+def _connect(db_path: Path, *, readonly=False) -> sqlite3.Connection:
+    return connect(db_path, readonly=readonly)
 
 
 def ensure_schema(connection: sqlite3.Connection) -> None:
@@ -207,7 +202,7 @@ def _values(record: dict, now: str) -> tuple:
 
 
 def sync_records(db_path: Path, records: list[dict], *, progress: IndexProgress | None = None) -> None:
-    """Migra ou atualiza registros em uma transação idempotente."""
+    """Atualiza registros em transações curtas com replay idempotente."""
     now = time.strftime("%Y-%m-%d %H:%M:%S")
     columns = (
         "source, relative_path, path, codigo, variante, filename, asset_id, size, last_modified, "
@@ -236,8 +231,8 @@ def sync_records(db_path: Path, records: list[dict], *, progress: IndexProgress 
     if progress:
         progress.report("Persistindo estado local", 0, len(records))
     with closing(_connect(db_path)) as connection, connection:
-        ensure_schema(connection)
-        connection.executemany(sql, values_to_write())
+        ensure_current_schema(connection)
+        write_batches(connection, sql, values_to_write())
     if progress:
         progress.report("Persistindo estado local", len(records), len(records), force=True)
 
@@ -245,41 +240,40 @@ def sync_records(db_path: Path, records: list[dict], *, progress: IndexProgress 
 def overlay_records(db_path: Path, records: list[dict], *, progress: IndexProgress | None = None) -> None:
     """Aplica o estado SQLite sobre registros do catálogo sem mudar seus consumidores."""
     if not db_path.exists():
-        sync_records(db_path, records, progress=progress)
         return
     by_identity = {
         (int(record.get("source", 0)), str(record.get("relative_path", "")).replace("\\", "/").casefold()): record
         for record in records
     }
-    with closing(_connect(db_path)) as connection, connection:
-        ensure_schema(connection)
-        current = 0
-        if progress:
-            progress.report("Carregando estado local", 0, len(records))
-        for row in connection.execute("SELECT * FROM image_state"):
-            # sqlite3.Row busca colunas por nome linearmente. Converta uma vez
-            # por linha para não repetir essa busca para cada campo de estado.
-            row = dict(zip(row.keys(), row))
-            record = by_identity.get((int(row["source"]), str(row["relative_path"])))
-            if record is None:
+    with closing(_connect(db_path, readonly=True)) as connection:
+        rows = connection.execute("SELECT * FROM image_state").fetchall()
+    current = 0
+    if progress:
+        progress.report("Carregando estado local", 0, len(records))
+    for row in rows:
+        # sqlite3.Row busca colunas por nome linearmente. Converta uma vez
+        # por linha para não repetir essa busca para cada campo de estado.
+        row = dict(zip(row.keys(), row))
+        record = by_identity.get((int(row["source"]), str(row["relative_path"])))
+        if record is None:
+            continue
+        for column in STATE_COLUMNS:
+            value = row[column]
+            # Bancos anteriores à v8 recebem esta coluna vazia. Preserve a
+            # identidade derivada do JSONL até o próximo sync persistí-la.
+            if column == "asset_id" and not str(value).strip():
                 continue
-            for column in STATE_COLUMNS:
-                value = row[column]
-                # Bancos anteriores à v8 recebem esta coluna vazia. Preserve a
-                # identidade derivada do JSONL até o próximo sync persistí-la.
-                if column == "asset_id" and not str(value).strip():
-                    continue
-                if column == "last_modified":
-                    record["mtime_ns"] = int(value)
-                elif column in {
-                    "indexed", "changed", "active", "missing_locally", "review_required"
-                }:
-                    record[column] = bool(value)
-                else:
-                    record[column] = value
-            current += 1
-            if progress:
-                progress.report("Carregando estado local", current, len(records))
+            if column == "last_modified":
+                record["mtime_ns"] = int(value)
+            elif column in {
+                "indexed", "changed", "active", "missing_locally", "review_required"
+            }:
+                record[column] = bool(value)
+            else:
+                record[column] = value
+        current += 1
+        if progress:
+            progress.report("Carregando estado local", current, len(records))
 
 
 def record_quarantine_issues(db_path: Path, issues: list[dict]) -> None:
@@ -294,8 +288,8 @@ def record_quarantine_issues(db_path: Path, issues: list[dict]) -> None:
         DO UPDATE SET detected_at=excluded.detected_at
     """
     with closing(_connect(db_path)) as connection, connection:
-        ensure_schema(connection)
-        connection.executemany(sql, (
+        ensure_current_schema(connection)
+        write_batches(connection, sql, (
             (
                 issue.get("source"), str(issue.get("relative_path", "")),
                 str(issue.get("filename", "")), str(issue.get("path", "")),
@@ -309,8 +303,7 @@ def record_quarantine_issues(db_path: Path, issues: list[dict]) -> None:
 def load_quarantine_issues(db_path: Path, limit: int = 1000) -> list[dict]:
     if not db_path.exists():
         return []
-    with closing(_connect(db_path)) as connection, connection:
-        ensure_schema(connection)
+    with closing(_connect(db_path, readonly=True)) as connection:
         rows = connection.execute(
             "SELECT * FROM quarantine_issue WHERE status='REQUIRES_ATTENTION' "
             "ORDER BY detected_at DESC, id DESC LIMIT ?", (limit,),
@@ -320,7 +313,7 @@ def load_quarantine_issues(db_path: Path, limit: int = 1000) -> list[dict]:
 
 def record_scan_summary(db_path: Path, summary) -> None:
     with closing(_connect(db_path)) as connection, connection:
-        ensure_schema(connection)
+        ensure_current_schema(connection)
         connection.execute(
             "INSERT INTO scan_summary (scanned_at, total_found, unchanged_files, "
             "added_files, changed_files, absent_files, moved_files, errors) "
@@ -337,8 +330,7 @@ def record_scan_summary(db_path: Path, summary) -> None:
 def load_latest_scan_summary(db_path: Path) -> dict:
     if not db_path.exists():
         return {}
-    with closing(_connect(db_path)) as connection, connection:
-        ensure_schema(connection)
+    with closing(_connect(db_path, readonly=True)) as connection:
         row = connection.execute(
             "SELECT * FROM scan_summary ORDER BY id DESC LIMIT 1"
         ).fetchone()

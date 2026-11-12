@@ -212,7 +212,7 @@ def mark_healthy():
         if path.parent != state_dir().resolve() or not path.name.startswith('job-'):
             raise ValueError('Handshake inválido.')
         (path / 'healthy').touch()
-        hold_data_lock()
+        hold_data_lock(timeout=130)
 
 
 def recover_interrupted():
@@ -247,28 +247,44 @@ def recover_interrupted():
 
 
 def restore_data(data, backup):
+    from contextlib import closing
+    from .shared_files import atomic_write
     for name in ('estado_indexador.sqlite3', 'config.json'):
         source = backup / name
-        if name.endswith('.sqlite3'):
-            for suffix in ('-wal', '-shm'):
-                (data / (name + suffix)).unlink(missing_ok=True)
-        if source.exists():
-            shutil.copy2(source, data / name)
-        else:
-            (data / name).unlink(missing_ok=True)
+        target = data / name
+        if source.exists() and name.endswith('.sqlite3'):
+            with closing(sqlite3.connect(source)) as src, closing(sqlite3.connect(target)) as dst:
+                src.backup(dst)
+                dst.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+                dst.execute('PRAGMA journal_mode=DELETE')
+        elif source.exists():
+            atomic_write(target, source.read_bytes())
+        elif target.exists():
+            if name.endswith('.sqlite3'):
+                with closing(sqlite3.connect(target)) as db:
+                    db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+                    db.execute('PRAGMA journal_mode=DELETE')
+            target.unlink()
 
 
 _DATA_GUARD = None
 
 
-def hold_data_lock():
+def hold_data_lock(*, timeout=0):
     global _DATA_GUARD
-    import portalocker
     from .config import APP_DIR
-    APP_DIR.mkdir(parents=True, exist_ok=True)
-    _DATA_GUARD = portalocker.Lock(str(APP_DIR / '.update-data.lock'), mode='a',
-                                  timeout=130, flags=portalocker.LOCK_SH | portalocker.LOCK_NB)
-    _DATA_GUARD.acquire()
+    from .shared_sessions import session
+    if _DATA_GUARD is None:
+        guard = session(APP_DIR, timeout=timeout)
+        guard.__enter__()
+        _DATA_GUARD = guard
+
+
+def release_data_lock():
+    global _DATA_GUARD
+    if _DATA_GUARD is not None:
+        guard, _DATA_GUARD = _DATA_GUARD, None
+        guard.__exit__(None, None, None)
 
 
 def install(work):

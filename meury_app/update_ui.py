@@ -26,24 +26,26 @@ class UpdateController:
         menu = tk.Menu(self.root)
         help_menu = tk.Menu(menu, tearoff=False)
         help_menu.add_command(label=f'Versão {__version__}', state='disabled')
-        help_menu.add_command(label='Verificar atualizações', command=lambda: self.check(True))
+        help_menu.add_command(label='Buscar atualização', command=lambda: self.check(True))
         menu.add_cascade(label='Ajuda', menu=help_menu)
         self.root.configure(menu=menu)
-        self.root.after(3000, self.check)
         self.root.after(100, self.poll)
 
     def check(self, manual=False):
+        if not manual:
+            return
         if sys.platform != 'win32':
             if manual:
                 messagebox.showinfo('Atualizações',
-                    'As atualizações automáticas estão disponíveis somente para Windows por enquanto.',
+                    'A busca de atualizações está disponível somente para Windows por enquanto.',
                     parent=self.root)
             return
         if self.running:
             return
         if manual and self.window is not None and self.window.winfo_exists():
-            self.window.destroy()
-            self.window = None
+            self.window.deiconify()
+            self.window.lift()
+            return
         self.running = True
         def worker():
             try:
@@ -67,6 +69,8 @@ class UpdateController:
                 elif event == 'error':
                     self.status.set(value)
                     messagebox.showerror('Atualizações', value, parent=self.root)
+                elif event == 'download_failed':
+                    self.download_button.configure(state='normal')
                 elif event == 'progress':
                     self.status.set(f'Baixando atualização: {value:.0%}')
                 elif event == 'ready':
@@ -102,20 +106,32 @@ class UpdateController:
         self.install_button.pack(pady=5)
         ttk.Button(self.window, text='Mais tarde', command=self.window.withdraw).pack(pady=10)
         if not getattr(sys, 'frozen', False) or Path(sys.executable).resolve() != executable(target_path()).resolve():
-            self.status.set(f'Instale primeiro o aplicativo em {target_path()} para habilitar a atualização automática.')
+            self.status.set(f'Instale primeiro o aplicativo em {target_path()} para habilitar a atualização.')
             return
         if not os.access(target_path().parent, os.W_OK):
             self.status.set('A pasta de instalação não permite escrita. Reinstale para este usuário.')
             return
+        self.download_button = ttk.Button(self.window, text='Baixar atualização',
+                                          command=lambda: self.start_download(raw, item))
+        self.download_button.pack(pady=5)
+        self.status.set('Clique em Baixar atualização para continuar.')
+
+    def start_download(self, raw, item):
+        if self.running:
+            return
         self.running = True
+        self.download_button.configure(state='disabled')
         def worker():
-            work = Path(tempfile.mkdtemp(prefix='job-', dir=state_dir()))
+            work = None
             try:
+                work = Path(tempfile.mkdtemp(prefix='job-', dir=state_dir()))
                 (work / 'manifest.json').write_bytes(raw)
                 download(item, work / 'package.zip', lambda progress: self.events.put(('progress', progress)))
                 self.events.put(('ready', work))
             except Exception:
-                shutil.rmtree(work, ignore_errors=True)
+                if work is not None:
+                    shutil.rmtree(work, ignore_errors=True)
+                self.events.put(('download_failed', None))
                 self.events.put(('error', 'Falha ao baixar ou validar a atualização. Tente novamente.'))
             finally:
                 self.events.put(('idle', None))
@@ -127,6 +143,19 @@ class UpdateController:
             messagebox.showinfo('Tarefa em andamento', 'Aguarde a conclusão das tarefas antes de atualizar.', parent=self.window)
             return
         from .config import APP_DIR
+        from .shared_sessions import active_sessions
+        try:
+            others = active_sessions(APP_DIR)
+        except Exception:
+            messagebox.showerror('Atualizações',
+                                 'Não foi possível verificar as sessões no compartilhamento. Tente novamente.',
+                                 parent=self.window)
+            return
+        if others:
+            messagebox.showinfo('Sistema em uso',
+                                'Encerre as sessões dos usuários: ' + ', '.join(others)
+                                + '. O pacote baixado será mantido.', parent=self.window)
+            return
         target = target_path().resolve()
         if target == APP_DIR.resolve() or target in APP_DIR.resolve().parents:
             messagebox.showerror('Atualizações', 'Mova a pasta de dados para fora da instalação antes de atualizar.', parent=self.window)

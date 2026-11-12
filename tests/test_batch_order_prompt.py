@@ -14,7 +14,7 @@ from meury_app.batch_order_processor import (
     build_prompt,
     discover_codex_models,
     extract_with_fallback,
-    main as batch_main,
+    _main_in_session as batch_main,
     move_to_completed,
     run_codex,
     run_creator,

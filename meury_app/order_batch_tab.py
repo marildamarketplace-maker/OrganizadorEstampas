@@ -23,6 +23,7 @@ class OrderBatchTab:
         permissions = (getattr(app, 'usuario_atual', None) or {}).get('permissoes', [])
         self.can_edit_paths = isinstance(permissions, list) and 'admin' in permissions
         self.worker = None
+        self.cancel = threading.Event()
         self.events = queue.Queue()
         self.report_reader = None
         default = APP_DIR / 'lotes' if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent.parent
@@ -69,6 +70,8 @@ class OrderBatchTab:
         self.path_entry.bind('<FocusOut>', lambda event: self.pdf_panel.refresh())
         self.start_button = ttk.Button(parent, text='Iniciar separação dos pedidos', command=self.start, style='Primary.TButton')
         self.start_button.pack(anchor='w', pady=8)
+        self.cancel_button = ttk.Button(parent, text='Cancelar após o pedido atual', command=self.cancel.set, state='disabled')
+        self.cancel_button.pack(anchor='w')
         ttk.Label(parent, textvariable=self.status, wraplength=700).pack(anchor='w', pady=8)
         toolbar = ttk.Frame(parent)
         toolbar.pack(fill='x', pady=(4, 6))
@@ -233,13 +236,15 @@ class OrderBatchTab:
         self.temporary_button.configure(state='disabled')
         self.set_path_states(busy=True)
         self.pdf_panel.refresh()
+        self.cancel.clear()
+        self.cancel_button.configure(state='normal')
         self.status.set('Processando pedidos...')
 
         def worker():
             try:
                 result = executar_lote(project, OPERATIONAL_DB_FILE, user_id, update_index=update,
                     log=lambda text: self.events.put(('log', text)), codex_path=codex,
-                    temporary_folder=temporary_folder)
+                    temporary_folder=temporary_folder, cancel_callback=self.cancel.is_set)
                 self.events.put(('done', result))
             except Exception as exc:
                 self.events.put(('error', str(exc)))
@@ -263,6 +268,7 @@ class OrderBatchTab:
                 reader = self.report_reader
                 if reader is not None and reader.window.winfo_exists():
                     reader.refresh()
+                self.cancel_button.configure(state='disabled')
                 self.app._set_busy(False)
                 self.set_path_states()
                 self.status.set(('Concluído.' if value == 0 else 'Concluído com pendências. Confira os logs e relatórios.')

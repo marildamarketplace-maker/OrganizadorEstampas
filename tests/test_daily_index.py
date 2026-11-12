@@ -169,6 +169,30 @@ class DailyIndexTest(unittest.TestCase):
         self.assertTrue(updated)
         build.assert_called_once()
 
+    def test_busy_scan_reuses_published_catalog(self):
+        from meury_app.shared_files import ResourceBusy
+        expected = {'6162': ['6162-A.jpg']}
+        with patch.object(daily_index, 'load_config', return_value={'source_dirs': ['artes']}), \
+             patch.object(daily_index, 'index_updated_today', return_value=False), \
+             patch.object(daily_index.indexer, 'index_catalog_available', return_value=True), \
+             patch.object(daily_index.indexer, 'update_index_incremental', side_effect=ResourceBusy()), \
+             patch.object(daily_index.indexer, 'load_index_payload', return_value={'index': expected}):
+            index, sources, updated = daily_index.prepare_daily_index()
+        self.assertIs(index, expected)
+        self.assertFalse(updated)
+
+    def test_wait_for_first_catalog_is_cancellable(self):
+        from meury_app.shared_files import ResourceBusy
+        cancelled = Mock(side_effect=[False, True])
+        with patch.object(daily_index, 'load_config', return_value={'source_dirs': ['artes']}), \
+             patch.object(daily_index, 'index_updated_today', return_value=False), \
+             patch.object(daily_index.indexer, 'index_catalog_available', return_value=False), \
+             patch.object(daily_index.indexer, 'build_index', side_effect=ResourceBusy()), \
+             patch.object(daily_index.indexer, 'load_index_payload', return_value=None), \
+             patch.object(daily_index.time, 'sleep'):
+            with self.assertRaisesRegex(RuntimeError, 'cancelada'):
+                daily_index.prepare_daily_index(cancel_callback=cancelled)
+
     def test_requires_configured_sources(self):
         with patch.object(daily_index, "load_config", return_value={"source_dirs": []}):
             with self.assertRaisesRegex(ValueError, "Nenhuma pasta"):
@@ -184,7 +208,8 @@ class DailyIndexTest(unittest.TestCase):
             with self.subTest(filename=filename):
                 self.assertNotIn("meury_app.daily_index", script)
                 self.assertIn("batch_order_processor.py", script)
-                self.assertLess(script.index("TRAVA"), script.rindex("--projeto"))
+                self.assertNotIn('mkdir "$TRAVA"', script)
+                self.assertNotIn('set "TRAVA=', script)
 
 
 if __name__ == "__main__":

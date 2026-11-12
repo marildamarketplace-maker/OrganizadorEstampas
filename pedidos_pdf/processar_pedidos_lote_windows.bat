@@ -15,7 +15,6 @@ if errorlevel 1 (
 set "CAIXA_ENTRADA=%RAIZ_PROJETO%\pedidos_pdf\entrada"
 set "RELATORIOS=%RAIZ_PROJETO%\pedidos_pdf\relatorios"
 set "CONTROLE=%RAIZ_PROJETO%\pedidos_pdf\.controle"
-set "TRAVA=%CONTROLE%\em_execucao"
 set "PROCESSADOR=%RAIZ_PROJETO%\meury_app\batch_order_processor.py"
 set "INICIALIZADOR=%RAIZ_PROJETO%\scripts\run_order_batch_windows.ps1"
 set "ESQUEMA=%RAIZ_PROJETO%\meury_app\batch_order_report.schema.json"
@@ -67,7 +66,7 @@ if not exist "%CONTROLE%" mkdir "%CONTROLE%"
 
 set "REINICIAR="
 if /i "%~1"=="--reiniciar" set "REINICIAR=-Reiniciar"
-rem O inicializador verifica a TRAVA e somente processos de --projeto deste lote.
+rem O Python coordena reservas por pedido. --reiniciar afeta apenas processos locais deste lote.
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%INICIALIZADOR%" -ProjectRoot "%RAIZ_PROJETO%" -PythonBin "%PYTHON_BIN%" -ProcessorPath "%PROCESSADOR%" -CodexBin "%CODEX_BIN%" %REINICIAR%
 set "RESULTADO=%ERRORLEVEL%"
 

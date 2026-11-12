@@ -89,12 +89,20 @@ class WindowsBatchLauncherTest(unittest.TestCase):
         process = self.launch()
         output, _ = process.communicate(timeout=25)
         self.assertEqual(process.returncode, 7, output)
-        self.assertIn("Trava antiga sem lote ativo", output)
+        self.assertNotIn("Trava antiga sem lote ativo", output)
         self.assertEqual(unrelated.read_text(), "keep")
-        self.assertFalse((self.control / "windows_execution.json").exists())
+        self.assertFalse(list(self.control.glob("windows_execution_*.json")))
 
-    def test_can_keep_active_batch_or_restart_its_entire_tree(self):
-        self.check_restart(use_switch=False)
+    def test_parallel_launcher_keeps_previous_local_batch_running(self):
+        (self.root / 'hold').touch()
+        first = self.launch()
+        self.ready(first)
+        (self.root / 'hold').unlink()
+        second = self.launch()
+        output, _ = second.communicate(timeout=25)
+        self.assertEqual(second.returncode, 7, output)
+        self.assertNotIn('Encerrando o lote anterior', output)
+        self.assertIsNone(first.poll())
 
     def test_restart_switch_stops_previous_batch(self):
         self.check_restart(use_switch=True)
@@ -103,11 +111,6 @@ class WindowsBatchLauncherTest(unittest.TestCase):
         (self.root / "hold").touch()
         first = self.launch()
         owner = self.ready(first)
-        second = self.launch()
-        output, _ = second.communicate(input="N\n", timeout=25)
-        self.assertEqual(second.returncode, 2, output)
-        self.assertIn("Deseja encerrar o lote anterior", output)
-        self.assertIsNone(first.poll())
         (self.root / "hold").unlink()
         replacement = self.launch(*(["-Reiniciar"] if use_switch else []))
         output, _ = replacement.communicate(
